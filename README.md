@@ -5,6 +5,32 @@ user↔admin support chat. Deployable to Railway as a single always-on container
 
 > **New here?** Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) for a full developer-facing tour of the system. For shipping to production see [`RAILWAY_DEPLOYMENT.md`](RAILWAY_DEPLOYMENT.md). The notes below are a quick reference; the two long docs are the source of truth.
 
+## Screenshots
+
+### AI Assistant — what guests see on majesticescape.in
+
+| Desktop (1280×900) | Tablet (768×1024) | Mobile (390×844) |
+|---|---|---|
+| ![AI desktop](docs/screenshots/01-user-ai-desktop.png) | ![AI tablet](docs/screenshots/02-user-ai-tablet.png) | ![AI mobile](docs/screenshots/03-user-ai-mobile.png) |
+
+Streaming reply with a horizontal snap-carousel of portrait property cards (centred card scales up, neighbours fade). Touch-swipe on mobile, drag + chevron buttons on desktop, dot indicator below. Up to 8 most-relevant matches per query plus a trailing "See all matching stays" tile.
+
+### Real-time Support chat — what guests see when they switch tabs
+
+| Desktop conversation restored on reload | Mobile real-time roundtrip |
+|---|---|
+| ![Support desktop](docs/screenshots/04-user-support-desktop.png) | ![Support mobile](docs/screenshots/05-user-support-mobile.png) |
+
+Full conversation history (live + immutable archive) restored from the server, system messages rendered as italic centred chips, "Info is helping you" header once an admin is assigned.
+
+### Admin reply console — runs on admin.majesticescape.in/dashboard/support-chat
+
+| Desktop two-pane (with status pills + full history) | Mobile single-pane with back arrow | Custom Mark-resolved modal |
+|---|---|---|
+| ![Admin desktop](docs/screenshots/06-admin-desktop.png) | ![Admin mobile](docs/screenshots/07-admin-mobile.png) | ![Admin modal](docs/screenshots/08-admin-modal.png) |
+
+OPEN / PENDING / RESOLVED status pills colour-coded; mobile collapses the conversation list and shows a back arrow on the active panel; native `confirm()` and `alert()` are replaced by a branded modal + toast for consistency.
+
 ## What this service does
 
 1. **AI chat (`/api/chat`)** — Streams answers from Gemini 2.0 Flash (with Groq + xAI fallbacks

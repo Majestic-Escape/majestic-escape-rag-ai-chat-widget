@@ -56,7 +56,11 @@ playwright-report/
 playwright/.cache/
 .playwright-mcp/
 test-results/
+
+# Screenshots: ignore random ones at the root, but allow the curated set
+# in docs/screenshots/ which the README links to.
 *.png
+!docs/screenshots/*.png
 
 # ─── Local archives / scratch ────────────────────────────────────────────────
 _archive_*
