@@ -6,7 +6,8 @@
     "dev": "tsx server.ts",
     "build": "next build",
     "start": "cross-env NODE_ENV=production tsx server.ts",
-    "lint": "next lint"
+    "lint": "next lint",
+    "atlas:create-index": "node scripts/createVectorIndex.js"
   },
   "dependencies": {
     "@google/genai": "^1.0.0",

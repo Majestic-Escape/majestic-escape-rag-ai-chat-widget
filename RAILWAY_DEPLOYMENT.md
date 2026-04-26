@@ -161,7 +161,12 @@ This is a one-time Atlas dashboard task — Railway can't do it for you.
 
 6. Wait ~5 minutes for the index to build. Atlas shows progress in the Search tab.
 
-> **`numDimensions` must be 3072** — that's the default output size of `gemini-embedding-001`. The matching value lives in [`server.me/scripts/createVectorIndex.js`](../server.me/scripts/createVectorIndex.js). If you ever switch embedding models, both this index and the field need rebuilding.
+> **`numDimensions` must be 3072** — that's the default output size of `gemini-embedding-001`. If you ever switch embedding models, both this index and the field need rebuilding.
+
+> **Shortcut: run the included script.** [`scripts/createVectorIndex.js`](scripts/createVectorIndex.js) handles step 5 programmatically — it idempotently creates or updates the index using `MONGODB_URI` from `.env.local`:
+> ```bash
+> node scripts/createVectorIndex.js
+> ```
 
 > The first time you query the index, Atlas will return zero matches if no documents have an `embedding` field yet. The first run of `runCatchUpSync` populates them.
 
