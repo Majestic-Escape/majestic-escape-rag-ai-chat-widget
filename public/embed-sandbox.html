@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Majestic Chat Widget — Embed Sandbox</title>
+    <style>
+      :root {
+        font-family: system-ui, -apple-system, sans-serif;
+        line-height: 1.5;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        max-width: 720px;
+        margin-inline: auto;
+      }
+      h1 { color: #36621F; }
+      pre {
+        background: #f5f5f5;
+        padding: 1rem;
+        border-radius: 8px;
+        overflow-x: auto;
+      }
+      .chip {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        background: #BBEEA1;
+        color: #36621F;
+        border-radius: 999px;
+        font-size: 0.85rem;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Majestic Chat Widget — Embed Sandbox</h1>
+    <p>
+      <span class="chip">smoke test</span>
+      This page loads the standalone embed bundle from the same origin
+      (<code>/embed/widget.js</code>). The widget should auto-mount in the
+      bottom-right corner. Click it to open and verify:
+    </p>
+    <ul>
+      <li>Launcher renders bottom-right.</li>
+      <li>Click → panel opens with AI greeting + 3 quick prompts.</li>
+      <li>Tailwind classes render correctly inside the Shadow DOM.</li>
+      <li>Ask "Find a villa in Goa with a pool" → streamed reply + carousel.</li>
+    </ul>
+    <p>
+      No <code>NEXT_PUBLIC_*</code>, no Tailwind config, no React tree on this
+      page — just the script tag below.
+    </p>
+    <pre>&lt;script src="/embed/widget.js" defer&gt;&lt;/script&gt;</pre>
+    <script src="/embed/widget.js" defer></script>
+  </body>
+</html>

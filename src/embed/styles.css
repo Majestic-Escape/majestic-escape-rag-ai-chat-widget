@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ChatWidget references font-poppins via the user.website CSS variable.
+ * In the standalone bundle the host page's --font-poppins var may not exist,
+ * so we provide a sensible fallback chain inside the Shadow DOM. The host
+ * page's font is unaffected. */
+:host {
+  --font-poppins: "Poppins", system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}

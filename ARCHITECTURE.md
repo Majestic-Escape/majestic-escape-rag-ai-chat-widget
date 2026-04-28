@@ -20,11 +20,24 @@ There are three other Majestic Escape repos that interact with this one. They ar
 | Repo | Role |
 |---|---|
 | `server.me` | Main backend (auth, properties, bookings). Off-limits. |
-| `user.website` | The customer-facing site at majesticescape.in. We add a thin proxy in `/api/chat` that forwards to this service. |
+| `user.website` | The customer-facing site at majesticescape.in. As of Phase A, **only loads the embed bundle via one `<Script>` tag** in `layout.tsx` — no React widget code lives there. |
 | `admin.site` | The internal admin panel. We add one new page (`/dashboard/support-chat`). |
 | `majestic-chat` | Guest↔Host chat. **Unrelated** — do not couple our code to it. |
 
-**Mental model:** this service owns "AI chat" and "user↔admin support chat". Everything else is somebody else's code.
+**Mental model:** this service owns "AI chat", "user↔admin support chat", **and** the customer-facing chat widget UI. Consumer sites embed it via a single `<script src="…/embed/widget.js">`.
+
+### Phase A — zero-footprint embed (current architecture)
+
+Until Phase A, the React chat widget lived inside `user.website/src/components/ai-chat/`. Every chat-only fix required a `user.website` PR + redeploy, which created churn for an unrelated developer.
+
+Phase A moved the widget into this repo at [`src/embed/`](src/embed/) and ships it as a single Vite-built bundle at `/embed/widget.js` (~92 kB gzipped):
+
+- **Custom element** — [`src/embed/main.tsx`](src/embed/main.tsx) registers `<majestic-chat-widget>`. The bundle auto-creates one on `<body>` if the host page doesn't include one explicitly, so integration is "drop in one script tag".
+- **Shadow DOM** — Tailwind classes are compiled with the rest of the bundle and injected as a `<style>` tag inside the element's open Shadow Root, scoping ~25 kB of CSS so it can never leak into or out of the host page.
+- **Backend URL resolution** — `src/embed/utils.ts → getBackendUrl()` picks (in order): `window.MAJESTIC_CHAT_BACKEND` page override → `VITE_BACKEND_URL` build-time env → origin of the loading `<script src>` → `window.location.origin`. So the widget always knows where its API lives, with no per-host config.
+- **Cross-origin REST** — [`src/middleware.ts`](src/middleware.ts) handles OPTIONS preflights on `/api/chat/*` and tags responses with `Access-Control-Allow-Origin` based on `ALLOWED_ORIGINS` env (echoes the request origin in dev when unset).
+- **Cross-origin Socket.IO** — [`server.ts`](server.ts) reads the same `ALLOWED_ORIGINS` env into the IO server's CORS config.
+- **Static asset headers** — [`next.config.ts`](next.config.ts) sets `Access-Control-Allow-Origin: *` + `Cache-Control: max-age=300, swr=86400` on `/embed/*` so the bundle is cacheable across deploys without going stale for long.
 
 ---
 
@@ -143,6 +156,7 @@ When a user types a message in the widget:
    - Parses body, validates `message` (must be string, ≤2000 chars, non-empty after trim), strips control bytes via `sanitizeText`.
    - If `mode === "support"`, returns a canned redirect response (the user should switch to the Support tab; AI doesn't try to handle support tickets).
    - Otherwise: persists the **user message** to `ai_chat_messages` (fire-and-forget) so it survives cache wipes.
+   - **Intent gate** ([`route.ts → shouldUseRag()`](src/app/api/chat/route.ts)): conversational fillers (`hi`, `thanks`), policy questions (`cancellation policy`, `refund`), booking-management (`my booking`, `cancel my booking`), and meta (`who are you`) skip vector search entirely and the LLM answers conversationally with no carousel. Discovery messages (everything else) fall through to the RAG pipeline below.
    - Embeds the query with Gemini's `gemini-embedding-001` model.
    - Runs Atlas Vector Search against `listingproperties.embedding` with `status: "active"` filter. Top 10 candidates.
    - Tries to extract a date range from the message + last user history turn. If found, queries `bookings` to mark conflicting properties `partiallyBooked: true`.
@@ -157,7 +171,7 @@ When a user types a message in the widget:
 
 5. **On the next page load**, the widget calls `/api/chat/history` to restore the conversation. Lookup is by `userId` (from JWT) or `guestSessionId` (from the year-long cookie). This is what makes "history doesn't disappear after clearing cache" work. The persisted `ai_chat_messages.properties` field is rehydrated alongside the model reply, so the property-card carousel below each AI message survives reloads identically to the text.
 
-6. **Property cards UI** — the model reply renders a horizontal snap-carousel of portrait property cards (in `user.website/src/components/ai-chat/ChatWidget.tsx → PropertyCarousel`). Centred card sits at full scale; neighbours fade to `scale-95 opacity-80`. Touch-swipe on mobile, drag + chevron buttons on desktop ≥768px, dot indicator below. Final tile is a "See all matching stays" link to `/stays`. Up to 8 cards per response (server cap); fewer if vector-search relevance is below the score threshold.
+6. **Property cards UI** — the model reply renders a horizontal snap-carousel of portrait property cards (in `src/embed/ChatWidget.tsx → PropertyCarousel`). Centred card sits at full scale; neighbours fade to `scale-95 opacity-80`. Touch-swipe on mobile, drag + chevron buttons on desktop ≥768px, dot indicator below. Final tile is a "See all matching stays" link to `/stays`. **The carousel intentionally caps at 8 cards** — users who want every match tap the trailing "See all matching stays" tile which routes to `/stays?q=…` on the consumer site for the full result set. Server-side filter: only candidates with vector score `> 0.65` are surfaced as cards (the LLM's grounding context still uses the full top-8 so it has options when summarising). Below 0.65 the match is not confident enough to be promoted as a recommendation.
 
 ### What can go wrong here
 
@@ -242,7 +256,30 @@ The transcript export endpoint reads from the archive, so users always get the f
 
 1. The 500-message ring buffer keeps each `support_chats` doc small (~250KB max) so admin list reads are fast.
 2. Compliance / legal requires that no message is ever silently dropped. The archive is the immutable log.
-3. The "write-archive-first, then push-to-live" order means a crash mid-write loses an in-flight message at most — the live array will simply not show it, but the archive is intact.
+3. **Ring-first, archive-second with retry**: `appendMessageWithArchive` pushes to the live ring buffer FIRST so the message is visible immediately, then writes to the archive with up to **3 retries** (50ms / 200ms backoff). The unique compound index on `(conversationId, message._id)` makes retries idempotent. If all 3 archive retries fail, the message is still in the ring buffer and we log `[support] archive insert FAILED after 3 retries` for an operator to chase. This trades the prior "archive-first" strict ordering for live-visibility-first, which matters more in a real-time chat.
+
+### Auto-acknowledgement (no LLM)
+
+Files: [src/lib/supportSocket.ts → handleIncomingMessage](src/lib/supportSocket.ts) (the auto-ack block immediately after the user-message broadcast).
+
+When a user sends a message into a conversation that has no admin assigned yet, the server emits a templated **system message with `kind: "auto"`** so the user gets an instant acknowledgement instead of staring at a silent void. This is **not** an LLM call — it's a static template chosen from two strings (first-ack vs follow-up).
+
+Race-safe via atomic `updateOne`:
+
+```ts
+chats.updateOne(
+  {
+    _id: conversationId,
+    assignedAdminId: null,
+    $nor: [{ messages: { $elemMatch: { from: "system", kind: "auto", createdAt: { $gte: fiveMinAgo } } } }],
+  },
+  { $push: { messages: { $each: [autoMsg], $slice: -MAX_MESSAGES_PER_CONVO } } }
+)
+```
+
+If two user messages arrive concurrently, exactly one update succeeds; the others see `matchedCount === 0` and skip the emit. No double-firing. Once an admin engages, `assignedAdminId !== null` short-circuits the whole block — no auto-ack noise on top of an active human conversation.
+
+The client renders these messages as **regular agent bubbles** (left-aligned, white card, headset avatar) — `useSupportChat → toLocal()` maps `{from:"system", kind:"auto"}` → `role:"model"` so it visually matches the greeting and any subsequent admin replies. Only the legitimately-event-y kinds (`join` / `handover` / `resolve` / `reopen`) render as centred italic chips.
 
 ### Socket events at a glance
 
@@ -250,13 +287,13 @@ The transcript export endpoint reads from the archive, so users always get the f
 |---|---|---|---|
 | `support:joined` | server → client | `{conversationId, history, status, assignedAdminName, rating, awaitingRating}` | initial state on connect |
 | `support:message` | client → server / server → room | `{conversationId, text, clientMessageId?}` | new message |
-| `support:typing` | client → server / server → room | `{conversationId, isTyping}` | typing indicator (debounced 2s) |
+| `support:typing` | client → server / server → room | `{conversationId, isTyping}` | typing indicator (debounced 2s, server verifies sender owns the conversation before broadcasting) |
 | `support:read` | client → server | `{conversationId, lastMessageId?}` | mark messages read |
 | `support:assign` | admin → server | `{conversationId}` | take ownership |
 | `support:resolve` | admin → server | `{conversationId}` | close convo |
 | `support:reopen` | admin → server | `{conversationId}` | re-open a resolved convo |
 | `support:rate` | user → server | `{conversationId, stars, comment?}` | submit rating |
-| `support:rating-dismissed` | user → server | `{conversationId}` | skip the rating prompt |
+| `support:rating-dismissed` | user → server | `{conversationId}` (server acks `{ok}`) | skip the rating prompt — client must wait for ack before emitting `support:start`, otherwise `onUserConnect` re-finds the still-unrated convo and replays the prompt |
 | `support:status` | server → room | `{conversationId, status, assignedAdminId?, assignedAdminName?}` | lifecycle change |
 | `support:new-conversation` | server → admins | `{conversationId, userFirstName}` | a new pending convo |
 | `support:conversation-updated` | server → admins | `{conversationId, lastMessage, status, ...}` | one-shot list refresh |

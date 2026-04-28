@@ -7,8 +7,6 @@ import { validateUserMessage, redactForLogs, sanitizeText } from "./moderation";
 
 const SUPPORT_MSG_LIMIT = 20; // 20 messages per minute per user/guest
 const SUPPORT_MSG_WINDOW_MS = 60_000;
-const SUPPORT_START_LIMIT = 5; // 5 new conversations per minute per IP/user
-const SUPPORT_START_WINDOW_MS = 60_000;
 const MAX_MESSAGES_PER_CONVO = 500; // hard cap; older entries archived
 const RATING_COMMENT_MAX = 500;
 
@@ -135,20 +133,9 @@ async function appendMessageWithArchive(
   );
   if (!exists) throw new Error("conversation not found");
 
-  // Step 1 — append to immutable archive (every message is permanently logged).
-  // Unique index on (conversationId, message._id) keeps retries idempotent.
-  try {
-    await archive.insertOne({
-      conversationId,
-      message,
-      archivedAt: new Date(),
-    });
-  } catch (err) {
-    const code = (err as { code?: number }).code;
-    if (code !== 11000) throw err;
-  }
-
-  // Step 2 — push to live ring buffer with atomic eviction.
+  // Build the chats.updateOne spec. We push to the ring buffer FIRST so the
+  // live UI sees the message immediately. The archive insert is then
+  // attempted — and retried — without blocking visibility.
   const pushSpec: Record<string, unknown> = {
     messages: { $each: [message], $slice: -MAX_MESSAGES_PER_CONVO },
   };
@@ -163,7 +150,50 @@ async function appendMessageWithArchive(
     update.$inc = { [`unreadCounts.${extra.incCounterparty}`]: 1 };
   }
 
+  // Step 1 — push to live ring buffer. If this fails the caller should see
+  // the error and let the user know; the message simply wasn't accepted.
   await chats.updateOne({ _id: conversationId }, update);
+
+  // Step 2 — best-effort archive insert with retry. Unique index on
+  // (conversationId, message._id) keeps retries idempotent, so it's safe
+  // to retry up to 3 times. If all retries fail, the message still lives
+  // in the ring buffer (500-deep) until eviction; we log loudly so an
+  // operator notices, but we don't surface the error to the user — the
+  // message DID land.
+  let archived = false;
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 3 && !archived; attempt++) {
+    try {
+      await archive.insertOne({
+        conversationId,
+        message,
+        archivedAt: new Date(),
+      });
+      archived = true;
+    } catch (err) {
+      const code = (err as { code?: number }).code;
+      if (code === 11000) {
+        // Duplicate — already archived, treat as success.
+        archived = true;
+      } else {
+        lastErr = err;
+        if (attempt < 2) {
+          // Tiny backoff: 50ms, 200ms.
+          await new Promise((r) => setTimeout(r, attempt === 0 ? 50 : 200));
+        }
+      }
+    }
+  }
+  if (!archived) {
+    console.error(
+      "[support] archive insert FAILED after 3 retries for message",
+      String(message._id),
+      "conv",
+      String(conversationId),
+      "err",
+      lastErr
+    );
+  }
 }
 
 function safeUserIdFromJwt(jwt: AppJwtPayload | null): ObjectId | null {
@@ -223,7 +253,14 @@ export function mountSupportNamespace(io: IOServer): void {
     if (ctx.isAdmin) void onAdminConnect(socket);
     else void onUserConnect(socket);
 
+    // Debounce per-socket: rapid duplicate `support:start` (e.g., from
+    // socket.io reconnect storms or a misbehaving client) shouldn't trigger
+    // duplicate `support:joined` payloads or duplicate Mongo work.
+    let lastStartAt = 0;
     socket.on("support:start", async () => {
+      const now = Date.now();
+      if (now - lastStartAt < 500) return; // ignore inside 500ms window
+      lastStartAt = now;
       if (ctx.isAdmin) await onAdminConnect(socket);
       else await onUserConnect(socket);
     });
@@ -246,12 +283,30 @@ export function mountSupportNamespace(io: IOServer): void {
       }
     });
 
-    socket.on("support:typing", (payload: { conversationId: string; isTyping: boolean }) => {
-      socket.to(roomFor(payload.conversationId)).emit("support:typing", {
-        conversationId: payload.conversationId,
-        from: ctx.isAdmin ? "admin" : "user",
-        isTyping: payload.isTyping,
-      });
+    socket.on("support:typing", async (payload: { conversationId: string; isTyping: boolean }) => {
+      // Authz: verify the sender is part of this conversation before
+      // broadcasting their typing state. Without this, a curious admin
+      // could blast "typing…" at any conversation room. Admins are
+      // implicitly trusted across all rooms, so they short-circuit.
+      try {
+        if (!ctx.isAdmin) {
+          const conversationId = safeConversationId(payload.conversationId);
+          const { chats } = await getCollections();
+          const userId = safeUserIdFromJwt(ctx.jwt);
+          const ownerFilter = userId
+            ? { _id: conversationId, userId }
+            : { _id: conversationId, guestSessionId: ctx.guestSessionId };
+          const owns = await chats.findOne(ownerFilter, { projection: { _id: 1 } });
+          if (!owns) return;
+        }
+        socket.to(roomFor(payload.conversationId)).emit("support:typing", {
+          conversationId: payload.conversationId,
+          from: ctx.isAdmin ? "admin" : "user",
+          isTyping: payload.isTyping,
+        });
+      } catch (err) {
+        console.warn("[support] typing authz check failed:", err);
+      }
     });
 
     socket.on("support:assign", async (payload: { conversationId: string }, ack?: (r: { ok: boolean; error?: string }) => void) => {
@@ -367,17 +422,29 @@ export function mountSupportNamespace(io: IOServer): void {
       }
     });
 
-    socket.on("support:rating-dismissed", async (payload: { conversationId: string }) => {
-      try {
-        const { chats } = await getCollections();
-        await chats.updateOne(
-          { _id: safeConversationId(payload.conversationId) },
-          { $set: { ratingDismissedAt: new Date() } }
-        );
-      } catch (err) {
-        console.error("[support] rating-dismissed error", err);
+    socket.on(
+      "support:rating-dismissed",
+      async (
+        payload: { conversationId: string },
+        ack?: (r: { ok: boolean; error?: string }) => void
+      ) => {
+        try {
+          const { chats } = await getCollections();
+          await chats.updateOne(
+            { _id: safeConversationId(payload.conversationId) },
+            { $set: { ratingDismissedAt: new Date() } }
+          );
+          // Ack so the client can sequence: dismiss → wait for ack → start
+          // a new conversation. Without this, support:start can race past
+          // the dismiss write and the server's onUserConnect re-finds the
+          // unrated-resolved convo, replaying the rating prompt.
+          ack?.({ ok: true });
+        } catch (err) {
+          console.error("[support] rating-dismissed error", err);
+          ack?.({ ok: false, error: (err as Error).message });
+        }
       }
-    });
+    );
 
     socket.on("disconnect", () => {
       // Rooms are cleaned up by Socket.IO automatically.
@@ -390,15 +457,11 @@ export function mountSupportNamespace(io: IOServer): void {
 async function onUserConnect(socket: Socket): Promise<void> {
   const { ctx } = socket.data as { ctx: ConnContext };
 
-  // Rate-limit conversation starts (defense against spam)
-  const startKey = ctx.jwt?.userId
-    ? `support:start:user:${ctx.jwt.userId}`
-    : `support:start:guest:${ctx.guestSessionId ?? socket.id}`;
-  const rl = checkRateLimit(startKey, SUPPORT_START_LIMIT, SUPPORT_START_WINDOW_MS);
-  if (!rl.ok) {
-    socket.emit("support:error", { reason: "Too many new conversations — please wait a moment." });
-    return;
-  }
+  // No connect-time rate limit — every page reload, network blip, or tab
+  // switch reconnects the support socket, and gating that creates false
+  // "too many new conversations" errors for ordinary users who simply
+  // refreshed the page. Per-message rate limit (SUPPORT_MSG_LIMIT) below
+  // remains the real spam guard.
 
   const { chats } = await getCollections();
   const userId = safeUserIdFromJwt(ctx.jwt);
@@ -641,6 +704,87 @@ async function handleIncomingMessage(
     conversationId: payload.conversationId,
     lastMessage: message,
   });
+
+  // Auto-acknowledgement (templated, NOT LLM-generated). Reassures the user
+  // that their message landed even before a human admin is online. Suppressed
+  // once an admin engages so we don't pollute an active conversation.
+  //
+  // Gating (race-safe via atomic findOneAndUpdate):
+  //   - Only fires for user messages (admin messages are skipped).
+  //   - Only when no admin has been assigned yet.
+  //   - Only one auto-ack per 5-minute window per conversation. The atomic
+  //     guard means concurrent user messages can't double-fire — exactly one
+  //     wins the conditional update; the others see no match and skip.
+  if (!ctx.isAdmin) {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+    // Pre-flight: read once to decide which template to use. The atomic
+    // guard below still protects against double-emit even if two requests
+    // race past this read.
+    const refreshed = await chats.findOne({ _id: conversationId });
+    const isFirstAck = !!refreshed && (refreshed.messages ?? []).every(
+      (m) => !(m.from === "system" && m.kind === "auto")
+    );
+    const autoText = isFirstAck
+      ? "Thanks for reaching out to Majestic Support! 👋 We've got your message — an agent will be with you as soon as possible. In the meantime, sharing a booking reference or a few extra details helps us get back to you faster."
+      : "Still here — your message is in our queue and an agent will respond shortly. Thanks for your patience!";
+    const autoMsg: SupportMessage = {
+      _id: new ObjectId(),
+      from: "system",
+      authorId: null,
+      authorName: null,
+      text: autoText,
+      createdAt: new Date(),
+      readBy: [],
+      kind: "auto",
+    };
+    // Atomic guard: only push if (a) admin not yet assigned, AND (b) no
+    // recent auto-ack in the last 5 min. If two concurrent user messages
+    // both reach this point, exactly one update succeeds; the other's
+    // matchedCount will be 0 and we skip the emit.
+    const guardResult = await chats.updateOne(
+      {
+        _id: conversationId,
+        assignedAdminId: null,
+        $nor: [
+          {
+            messages: {
+              $elemMatch: {
+                from: "system",
+                kind: "auto",
+                createdAt: { $gte: fiveMinAgo },
+              },
+            },
+          },
+        ],
+      },
+      { $push: { messages: { $each: [autoMsg], $slice: -MAX_MESSAGES_PER_CONVO } } }
+    );
+    if (guardResult.matchedCount > 0) {
+      // Won the guard. Mirror to archive (non-fatal if it fails — the
+      // ring buffer push already committed) and broadcast.
+      try {
+        const { archive } = await getCollections();
+        await archive.insertOne({
+          conversationId,
+          message: autoMsg,
+          archivedAt: new Date(),
+        });
+      } catch (err) {
+        const code = (err as { code?: number }).code;
+        if (code !== 11000) {
+          console.warn("[support] auto-ack archive insert failed:", err);
+        }
+      }
+      socket.nsp.to(roomFor(payload.conversationId)).emit("support:message", {
+        conversationId: payload.conversationId,
+        message: autoMsg,
+      });
+      socket.nsp.to(ADMINS_ROOM).emit("support:conversation-updated", {
+        conversationId: payload.conversationId,
+        lastMessage: autoMsg,
+      });
+    }
+  }
 }
 
 // ─── Assign / handover ──────────────────────────────────────────────────────

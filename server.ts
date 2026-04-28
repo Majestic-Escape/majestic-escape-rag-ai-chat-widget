@@ -26,9 +26,25 @@ async function main() {
     .map((o) => o.trim())
     .filter(Boolean);
 
+  // CORS policy mirrors src/middleware.ts so REST + WebSocket gates behave
+  // identically. In dev (NODE_ENV !== production) any origin is allowed so
+  // LAN-IP access from a phone (http://192.168.x.x:3000) just works without
+  // having to enumerate every dev's machine IP in ALLOWED_ORIGINS. In prod
+  // we lock down to the explicit allow-list (or accept all if unset, which
+  // matches the historical fallback).
+  const corsOriginCheck = (
+    origin: string | undefined,
+    cb: (err: Error | null, allow?: boolean | string | string[]) => void
+  ) => {
+    if (!origin) return cb(null, true);
+    if (process.env.NODE_ENV !== "production") return cb(null, true);
+    if (allowedOrigins.length === 0) return cb(null, true);
+    cb(null, allowedOrigins.includes(origin));
+  };
+
   const io = new IOServer(httpServer, {
     cors: {
-      origin: allowedOrigins.length ? allowedOrigins : true,
+      origin: corsOriginCheck,
       credentials: true,
     },
   });

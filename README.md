@@ -35,15 +35,28 @@ OPEN / PENDING / RESOLVED status pills colour-coded; mobile collapses the conver
 
 1. **AI chat (`/api/chat`)** — Streams answers from Gemini 2.0 Flash (with Groq + xAI fallbacks
    on quota errors). RAG against the `listingproperties` MongoDB Atlas Vector Search index;
-   booking-aware filtering against the `bookings` collection.
+   booking-aware filtering against the `bookings` collection. An intent gate
+   (`shouldUseRag()`) skips RAG for greetings, policy questions, booking
+   management, and meta turns — those get short conversational replies with
+   no carousel. See `ARCHITECTURE.md` §Operational guards.
 2. **Embedding maintenance** — A long-lived MongoDB Change Streams worker watches
    `listingproperties` for inserts/updates/deletes and re-embeds within ~1s. A
    `runCatchUpSync` job runs at boot to reconcile any missed changes.
 3. **Real-time support chat (`/support` Socket.IO namespace)** — Persists user↔admin
    conversations to `support_chats` (live ring buffer) + `support_chats_archive`
    (immutable compliance log). Admin reply console lives in `admin.site` at
-   `/dashboard/support-chat` — this service is backend-only.
-4. **Persistence + retention** — every AI exchange goes to `ai_chat_messages`
+   `/dashboard/support-chat` — this service is backend-only. **Templated
+   auto-acknowledgement** fires on the user's first message in a fresh
+   conversation so they get an instant "we've got your message" reply even
+   when no admin is online yet (no LLM, race-safe via atomic Mongo update,
+   suppressed once an admin engages).
+4. **Standalone embed bundle (`/embed/widget.js`)** — One self-contained JS file
+   (~92 kB gzipped) that hosts the entire React + Tailwind chat UI inside a Shadow
+   DOM. Consumer sites (e.g. `user.website`) integrate the chat with **one
+   `<script>` tag** — every chat-only change ships from this repo without
+   touching the consumer. See [`docs/EMBED_INTEGRATION.md`](docs/EMBED_INTEGRATION.md)
+   if it exists, or the brief in [`ARCHITECTURE.md`](ARCHITECTURE.md#standalone-embed-bundle).
+5. **Persistence + retention** — every AI exchange goes to `ai_chat_messages`
    (with the property-card array attached to model replies), and every support
    message goes to `support_chats_archive`, so reloads, sign-ins from a new
    device, and admin transcript exports all see the full history.
@@ -51,6 +64,26 @@ OPEN / PENDING / RESOLVED status pills colour-coded; mobile collapses the conver
 This service does **not** depend on `server.me` — it writes the `embedding` and
 `embeddingUpdatedAt` fields to `listingproperties` via the raw MongoDB driver,
 bypassing Mongoose entirely.
+
+### Integrating the chat on a consumer site
+
+```html
+<!-- The bundle auto-mounts a <majestic-chat-widget> custom element -->
+<script src="https://chat.majesticescape.in/embed/widget.js" defer></script>
+```
+
+Or, in a Next.js app:
+
+```tsx
+import Script from "next/script";
+<Script src="https://chat.majesticescape.in/embed/widget.js" strategy="lazyOnload" />
+```
+
+The bundle reads the user's JWT from `localStorage` (same eTLD+1 partitioning),
+auto-derives the API origin from the script's `src` attribute, and renders the
+entire chat inside a Shadow DOM so it can never collide with the host page's
+CSS. Set `ALLOWED_ORIGINS` on this service to your consumer site's origin so
+cross-origin REST + Socket.IO calls aren't penalised by the rate-limit halving.
 
 ## Local development
 
@@ -79,9 +112,16 @@ See [`RAILWAY_DEPLOYMENT.md`](RAILWAY_DEPLOYMENT.md) for the full step-by-step g
 - `src/app/api/chat/route.ts` — RAG + booking-aware filtering
 - `src/lib/embedder.ts` — Gemini embedding + raw MongoDB writes
 - `src/lib/supportSocket.ts` — Socket.IO `/support` namespace
+- `src/middleware.ts` — CORS + preflight for `/api/chat/*` (cross-origin embed)
+- `src/embed/main.tsx` — custom-element + Shadow-DOM mount entry for the embed bundle
+- `src/embed/ChatWidget.tsx`, `useChat.ts`, `useSupportChat.ts`, `utils.ts`, `types.ts`, `styles.css` — the React widget bundled into `/embed/widget.js`
+- `vite.embed.config.ts` — Vite library build config (IIFE, single-file output to `public/embed/widget.js`)
 - `src/workers/changeStream.ts` — real-time embedding updates
 - `src/workers/catchUpSync.ts` — boot-time reconciliation
-> The user-facing chat widget UI lives in [`user.website/src/components/ai-chat/`](../user.website/src/components/ai-chat/), not here. The admin reply console lives in [`admin.site/src/app/dashboard/support-chat/`](../admin.site/src/app/dashboard/support-chat/). This service is backend-only.
+
+> The user-facing chat widget UI **now lives here** in `src/embed/`. Consumer
+> sites load it via the `/embed/widget.js` bundle. The admin reply console lives
+> in [`admin.site/src/app/dashboard/support-chat/`](../admin.site/src/app/dashboard/support-chat/).
 
 ## Operational notes
 

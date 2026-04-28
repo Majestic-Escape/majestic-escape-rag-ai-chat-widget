@@ -61,6 +61,22 @@ PROPERTY MENTIONS — IMPORTANT:
 - If you mention that a property is fully booked for the user's dates, suggest one of the available alternatives from the list.
 - If a user asks for human support, let them know they can switch to the "Support" tab at the top of the chat.`;
 
+// Appended to the system prompt only when the intent gate decides this turn
+// is conversational (greeting / thanks / policy / booking-mgmt / meta).
+// Without this, the LLM's discovery-mode default leaks property names from
+// the conversation history even when the user is just saying "hi" or "ok".
+const CONVERSATIONAL_DIRECTIVE = `
+
+CONVERSATIONAL MODE — STRICT (this turn):
+- The user's current message is conversational (greeting, thanks, policy question, booking-management, or meta question about you).
+- Reply briefly and warmly. ONE short sentence is ideal; two max.
+- Do NOT recommend, list, mention, or "consider" any specific property — even if earlier turns mentioned them. The user did not ask for a recommendation right now.
+- For greetings/thanks/fillers: a friendly acknowledgement (e.g. "Hi! What kind of stay are you looking for?", "You're welcome!").
+- For "what's your cancellation policy" / refund / payment / privacy / terms: give a brief generic answer and point them to the property page or Support tab for specifics. Don't invent platform-wide policy.
+- For booking-management ("cancel my booking", "my reservation", "change my dates"): tell them to switch to the "Support" tab where an agent can help.
+- For meta ("who are you", "what can you do"): describe yourself in one line — Majestic AI, helps discover stays across India.
+- NEVER include property names, prices, "match", "consider", "great option", or "explore" phrasing in this turn.`;
+
 interface PropertyResult {
   _id: ObjectId | string;
   title: string;
@@ -198,6 +214,35 @@ async function findBlockedPropertyIds(
     )
     .toArray();
   return new Set(blocking.map((b) => String(b.propertyId)));
+}
+
+// Decide whether to run vector search + show property cards for this turn.
+// Conversational filler ("hi", "thanks"), policy questions ("cancellation
+// policy"), booking-management ("cancel my booking"), and meta questions
+// ("who are you") should be answered conversationally without surfacing
+// unrelated stays — even if cosine similarity squeaks above the score floor.
+// Discovery messages ("villa in goa with a pool", "weekend stays under 5000")
+// fall through to the default branch and trigger the RAG pipeline as before.
+function shouldUseRag(message: string): boolean {
+  const msg = message.trim().toLowerCase();
+  if (msg.length < 4) return false;
+  if (
+    /^(hi|hello|hey|yo|sup|thanks?|thank you|ok(ay)?|cool|great|awesome|nice|lol|haha|got it|sure|yes|no|yup|nope|alright)[\s!.?]*$/i.test(
+      msg
+    )
+  ) {
+    return false;
+  }
+  const policyTerms =
+    /\b(cancellation|refund|privacy|terms|polic(y|ies)|faq|how do i (cancel|reset|change|update|edit)|contact (host|support|us)|customer (service|care|support)|help( center)?|password|sign in|login|account|profile|verify|verification|otp)\b/i;
+  if (policyTerms.test(msg)) return false;
+  const bookingMgmtTerms =
+    /\b(my booking|my reservation|my stay|my trip|booking ref(erence)?|change my (booking|dates|stay)|modify (my )?booking|cancel my booking|check[ -]?in time|check[ -]?out time)\b/i;
+  if (bookingMgmtTerms.test(msg)) return false;
+  const metaTerms =
+    /^(who are you|what can you do|what do you do|are you a (bot|human|real)|how (are you|do you work)|tell me about (yourself|majestic escape)|help)$/i;
+  if (metaTerms.test(msg)) return false;
+  return true;
 }
 
 function buildContext(properties: PropertyResult[]): string {
@@ -369,46 +414,55 @@ export async function POST(req: NextRequest) {
 
     let contextBlock = "";
     let cardProperties: PropertyResult[] = [];
-    try {
-      const queryEmbedding = await embedQuery(cleanMessage);
-      const candidates = await vectorSearch(queryEmbedding, 12);
-      if (candidates.length > 0) {
-        // Booking-aware filtering — search in message + last user history turn
-        const historyText = safeHistory
-          .filter((m) => m.role === "user")
-          .slice(-2)
-          .map((m) => m.text)
-          .join(" ");
-        const range = extractDateRange(`${cleanMessage} ${historyText}`);
-        if (range) {
-          const ids = candidates
-            .map((p) => (typeof p._id === "string" ? new ObjectId(p._id) : p._id))
-            .filter(Boolean) as ObjectId[];
-          const blocked = await findBlockedPropertyIds(ids, range.from, range.to);
-          for (const c of candidates) {
-            if (blocked.has(String(c._id))) c.partiallyBooked = true;
-          }
-        }
-        // Top 8: prefer available, then by score. Score>0.5 filter (below)
-        // still drops genuine non-matches even when 8 slots are available.
-        const sorted = candidates
-          .slice()
-          .sort((a, b) => {
-            if (!!a.partiallyBooked === !!b.partiallyBooked) {
-              return (b.score ?? 0) - (a.score ?? 0);
+    const isConversationalTurn = !shouldUseRag(cleanMessage);
+    if (!isConversationalTurn) {
+      try {
+        const queryEmbedding = await embedQuery(cleanMessage);
+        const candidates = await vectorSearch(queryEmbedding, 12);
+        if (candidates.length > 0) {
+          // Booking-aware filtering — search in message + last user history turn
+          const historyText = safeHistory
+            .filter((m) => m.role === "user")
+            .slice(-2)
+            .map((m) => m.text)
+            .join(" ");
+          const range = extractDateRange(`${cleanMessage} ${historyText}`);
+          if (range) {
+            const ids = candidates
+              .map((p) => (typeof p._id === "string" ? new ObjectId(p._id) : p._id))
+              .filter(Boolean) as ObjectId[];
+            const blocked = await findBlockedPropertyIds(ids, range.from, range.to);
+            for (const c of candidates) {
+              if (blocked.has(String(c._id))) c.partiallyBooked = true;
             }
-            return a.partiallyBooked ? 1 : -1;
-          })
-          .slice(0, 8);
-        const context = buildContext(sorted);
-        contextBlock = `\n\nRELEVANT PROPERTIES FROM OUR DATABASE:\n${context}\n\nWhen recommending properties, only mention those listed above. Use the property's title (name) only — do NOT echo the ID, URL, or Link field in your text response. The user sees clickable cards below.`;
-        cardProperties = sorted.filter((p) => (p.score ?? 1) > 0.5);
+          }
+          // Top 8: prefer available, then by score. The model gets all 8 in
+          // its grounding context (so it has options to choose from), but the
+          // user-facing carousel only shows the confident matches (>0.65) so
+          // borderline-similarity stays don't pollute the recommendations.
+          const sorted = candidates
+            .slice()
+            .sort((a, b) => {
+              if (!!a.partiallyBooked === !!b.partiallyBooked) {
+                return (b.score ?? 0) - (a.score ?? 0);
+              }
+              return a.partiallyBooked ? 1 : -1;
+            })
+            .slice(0, 8);
+          const context = buildContext(sorted);
+          contextBlock = `\n\nRELEVANT PROPERTIES FROM OUR DATABASE:\n${context}\n\nWhen recommending properties, only mention those listed above. Use the property's title (name) only — do NOT echo the ID, URL, or Link field in your text response. The user sees clickable cards below.`;
+          cardProperties = sorted.filter((p) => (p.score ?? 1) > 0.65);
+        }
+      } catch (ragErr) {
+        console.warn("[chat/route] RAG unavailable, falling back:", (ragErr as Error).message);
       }
-    } catch (ragErr) {
-      console.warn("[chat/route] RAG unavailable, falling back:", (ragErr as Error).message);
     }
 
-    const systemPrompt = BASE_SYSTEM_PROMPT + contextBlock + SAFETY_DIRECTIVE;
+    const systemPrompt =
+      BASE_SYSTEM_PROMPT +
+      contextBlock +
+      (isConversationalTurn ? CONVERSATIONAL_DIRECTIVE : "") +
+      SAFETY_DIRECTIVE;
 
     const cardData = cardProperties.map((p) => ({
       _id: String(p._id),

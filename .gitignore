@@ -13,6 +13,13 @@ next-env.d.ts
 .swc
 .cache
 
+# Vite embed bundle output — `npm run build:embed` regenerates this on every
+# Railway deploy. The whole subdir is build artefacts:
+#   - widget.js (~308 kB compiled bundle)
+#   - embed-sandbox.html (vite copies it from public/ into the outDir)
+# The SOURCE for the sandbox lives at public/embed-sandbox.html and IS tracked.
+public/embed/
+
 # ─── Environment files (NEVER commit) ─────────────────────────────────────────
 # .env.example is committed as a template — explicitly NOT ignored.
 .env

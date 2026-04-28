@@ -13,6 +13,60 @@ If you're new to Railway, treat each section as a checklist — each one takes a
 
 ---
 
+## 0. Production + Staging checklist (read this first)
+
+The chatbot supports two consumer environments out of the box:
+
+| Environment | user.website origin | admin.site origin |
+|---|---|---|
+| **Staging** | `https://user.me.coderelix.in` | `https://admin.me.coderelix.in` |
+| **Production** | `https://majesticescape.in` (+ `www.`) | `https://admin.majesticescape.in` |
+
+The recommended setup is **two widget service deployments** (one per environment) so a bad bundle deploy on staging can't bleed into prod and the data stays isolated. If budget forces a single shared deployment, see *§ Single shared widget service* below.
+
+### Staging deployment env vars
+
+| Service | Where to set | Var | Value |
+|---|---|---|---|
+| widget service (Railway, staging) | Variables tab | `MONGODB_URI` | staging Atlas DB connection string |
+| widget service (Railway, staging) | Variables tab | `JWT_SECRET` | **same as the staging server.me secret** |
+| widget service (Railway, staging) | Variables tab | `GEMINI_API_KEY` | a Gemini Developer API key |
+| widget service (Railway, staging) | Variables tab | `ALLOWED_ORIGINS` | `https://user.me.coderelix.in,https://admin.me.coderelix.in` |
+| widget service (Railway, staging) | Variables tab | `ADMIN_EMAILS` | comma-separated staging admin emails |
+| widget service (Railway, staging) | Variables tab | `NEXT_PUBLIC_PROPERTY_BASE_URL` | `https://user.me.coderelix.in` |
+| user.website (Vercel, staging) | Variables tab | `NEXT_PUBLIC_CHAT_WIDGET_URL` | `https://chat.me.coderelix.in/embed/widget.js` |
+| admin.site (Vercel, staging) | Variables tab | `NEXT_PUBLIC_SUPPORT_SOCKET_URL` | `https://chat.me.coderelix.in` |
+
+### Production deployment env vars
+
+| Service | Where to set | Var | Value |
+|---|---|---|---|
+| widget service (Railway, prod) | Variables tab | `MONGODB_URI` | prod Atlas DB connection string |
+| widget service (Railway, prod) | Variables tab | `JWT_SECRET` | **same as the prod server.me secret** |
+| widget service (Railway, prod) | Variables tab | `GEMINI_API_KEY` | prod Gemini key |
+| widget service (Railway, prod) | Variables tab | `ALLOWED_ORIGINS` | `https://majesticescape.in,https://www.majesticescape.in,https://admin.majesticescape.in` |
+| widget service (Railway, prod) | Variables tab | `ADMIN_EMAILS` | prod admin emails |
+| widget service (Railway, prod) | Variables tab | `NEXT_PUBLIC_PROPERTY_BASE_URL` | `https://majesticescape.in` |
+| user.website (Vercel, prod) | Variables tab | `NEXT_PUBLIC_CHAT_WIDGET_URL` | `https://chat.majesticescape.in/embed/widget.js` |
+| admin.site (Vercel, prod) | Variables tab | `NEXT_PUBLIC_SUPPORT_SOCKET_URL` | `https://chat.majesticescape.in` |
+
+### Why each consumer-side var is mandatory
+
+- `NEXT_PUBLIC_CHAT_WIDGET_URL` on **user.website** — without this, the inline dev-loader fallback fires on the public domain and tries to fetch `https://<your-domain>:3003/embed/widget.js` (a port that isn't exposed publicly). The chat widget would silently fail to load. As of the production-readiness pass, the dev-loader now refuses to run on non-local hostnames and writes a clear `console.error` pointing at this exact var so the misconfig is obvious in DevTools.
+- `NEXT_PUBLIC_SUPPORT_SOCKET_URL` on **admin.site** — admin.site connects directly to the widget service's Socket.IO `/support` namespace. Without this, the admin reply console can't reach the widget service.
+
+### Single shared widget service (Pattern A) — only if cost-constrained
+
+Combine all four origins into one `ALLOWED_ORIGINS` and point both staging+prod consumers at the same widget URL:
+
+```
+ALLOWED_ORIGINS=https://majesticescape.in,https://www.majesticescape.in,https://admin.majesticescape.in,https://user.me.coderelix.in,https://admin.me.coderelix.in
+```
+
+Tradeoff: staging users will hit prod data, and a bad bundle deploy hits both at once. Only acceptable for early-stage projects with low traffic.
+
+---
+
 ## 1. Why Railway and not Vercel/Render?
 
 This service has **two long-lived processes** that must never sleep:
@@ -74,8 +128,12 @@ XAI_API_KEY=<your-xai-key>
 ADMIN_EMAILS=<comma-separated-admin-emails>
 ADMIN_USER_IDS=<comma-separated-24-char-hex-ids>
 
-# Required — CORS allow-list
-ALLOWED_ORIGINS=https://majesticescape.in,https://admin.majesticescape.in
+# Required — CORS allow-list (Phase A: this MUST include every consumer site
+# that loads the embed bundle, otherwise:
+#   1. Cross-origin /api/chat fetch falls back to halved rate limits.
+#   2. Socket.IO will reject WebSocket upgrades from unknown origins.
+# Add www / staging / preview hostnames as needed.
+ALLOWED_ORIGINS=https://majesticescape.in,https://www.majesticescape.in,https://admin.majesticescape.in
 
 # Cost guardrails (24h caps; see ARCHITECTURE.md §8)
 DAILY_AI_LIMIT_USER=200
@@ -87,6 +145,20 @@ NEXT_PUBLIC_PROPERTY_BASE_URL=https://majesticescape.in
 # Leave empty in prod — the widget defaults to its current origin
 NEXT_PUBLIC_SUPPORT_SOCKET_URL=
 ```
+
+### On the consumer site (e.g. `user.website`)
+
+Phase A made `user.website` load the chat through a single script tag. Set this
+on the consumer's deploy:
+
+```env
+# Absolute URL of the embed bundle. Without this, layout.tsx falls back to a
+# dev-only inline loader that derives the URL from window.location.hostname.
+NEXT_PUBLIC_CHAT_WIDGET_URL=https://chat.majesticescape.in/embed/widget.js
+```
+
+Also add `chat.majesticescape.in` to the consumer's CSP `script-src` directive
+if a CSP is configured.
 
 > **Do NOT set `PORT`.** Railway injects it automatically and the code reads `process.env.PORT`.
 
@@ -223,6 +295,40 @@ For localhost dev, also add `http://localhost:3000,http://localhost:3001`.
 ## 11. Smoke tests after deployment
 
 Run these in order. If any fails, see the troubleshooting section below.
+
+### Pre-flight: bundle reachability + CORS allow-list (do this first)
+
+These four `curl`s exercise the bundle URL and the CORS allow-list directly. Run them right after changing any env var on Railway — they catch ~80% of misconfigurations before any user notices. Substitute origins/hosts for the environment you're verifying.
+
+```bash
+# 1. Staging — bundle reachable + CORS open for the bundle file itself
+curl -sI -H "Origin: https://user.me.coderelix.in" https://chat.me.coderelix.in/embed/widget.js | grep -E "HTTP|access-control|content-type"
+# Expected: HTTP/2 200, access-control-allow-origin: *, content-type: application/javascript
+
+# 2. Staging — REST preflight from the user.website origin
+curl -s -o /dev/null -w "%{http_code}\n" -X OPTIONS \
+  -H "Origin: https://user.me.coderelix.in" \
+  -H "Access-Control-Request-Method: POST" \
+  https://chat.me.coderelix.in/api/chat
+# Expected: 204
+
+# 3. Production — same two for the prod environment
+curl -sI -H "Origin: https://majesticescape.in" https://chat.majesticescape.in/embed/widget.js | grep -E "HTTP|access-control|content-type"
+curl -s -o /dev/null -w "%{http_code}\n" -X OPTIONS \
+  -H "Origin: https://majesticescape.in" \
+  -H "Access-Control-Request-Method: POST" \
+  https://chat.majesticescape.in/api/chat
+# Expected: 200 + ACAO; 204 preflight
+
+# 4. Negative test — a non-allow-listed origin SHOULD be rejected in prod
+curl -s -o /dev/null -w "%{http_code}\n" -X OPTIONS \
+  -H "Origin: https://attacker.example.com" \
+  -H "Access-Control-Request-Method: POST" \
+  https://chat.majesticescape.in/api/chat
+# Expected: 403 (or 204 with NO access-control-allow-origin header — browser will then block the response on the client side)
+```
+
+If any of (1)–(3) returns the wrong status or is missing the ACAO header, the `ALLOWED_ORIGINS` env on that Railway service is misconfigured. Fix it and re-run.
 
 ### A. Service is alive
 
