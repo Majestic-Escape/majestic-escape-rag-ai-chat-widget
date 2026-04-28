@@ -66,8 +66,10 @@ test-results/
 
 # Screenshots: ignore random ones at the root, but allow the curated set
 # in docs/screenshots/ which the README links to.
+# Regression/test screenshots (phase*-prefixed) are artefacts — not committed.
 *.png
 !docs/screenshots/*.png
+docs/screenshots/phase*.png
 
 # ─── Local archives / scratch ────────────────────────────────────────────────
 _archive_*
