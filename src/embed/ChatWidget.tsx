@@ -857,6 +857,7 @@ export const ChatWidget: React.FC = () => {
   const support = useSupportChat();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
 
   // Show only the active tab's history; AI from local hook, Support from Socket.IO hook.
   const messages = mode === "ai" ? aiMessages : support.messages;
@@ -953,25 +954,128 @@ export const ChatWidget: React.FC = () => {
   }, [isOpen]);
 
   // Lock body + html scroll while the chat is open on mobile/tablet (≤ lg).
-  // Locking only `body` is not enough on iOS Safari where html is the actual
-  // scroll container, so we lock both. We also touch `overscroll-behavior` to
-  // prevent rubber-banding through the backdrop.
+  // `overflow: hidden` alone is not enough — on iOS Safari and on Android
+  // Chrome with `interactive-widget: overlays-content` (the default), the user
+  // can still drag the page content behind the panel when the on-screen
+  // keyboard is open, which scrolls the host page out from under the floating
+  // panel. The hardened pattern: stash the current scroll position, then
+  // pin the body with `position: fixed; top: -scrollY; width: 100%`, which
+  // visually freezes the page. On cleanup we restore the scroll position so
+  // the host page is exactly where the user left it.
   useEffect(() => {
     if (!isOpen || typeof window === "undefined") return;
     const mql = window.matchMedia("(max-width: 1023px)");
+    let lockedScrollY = 0;
+    let isLocked = false;
     const apply = () => {
-      const lock = mql.matches;
-      document.body.style.overflow = lock ? "hidden" : "";
-      document.documentElement.style.overflow = lock ? "hidden" : "";
-      document.body.style.overscrollBehavior = lock ? "contain" : "";
+      const shouldLock = mql.matches;
+      if (shouldLock && !isLocked) {
+        lockedScrollY = window.scrollY;
+        document.body.style.position = "fixed";
+        document.body.style.top = `-${lockedScrollY}px`;
+        document.body.style.left = "0";
+        document.body.style.right = "0";
+        document.body.style.width = "100%";
+        document.body.style.overflow = "hidden";
+        document.documentElement.style.overflow = "hidden";
+        document.body.style.overscrollBehavior = "contain";
+        isLocked = true;
+      } else if (!shouldLock && isLocked) {
+        document.body.style.position = "";
+        document.body.style.top = "";
+        document.body.style.left = "";
+        document.body.style.right = "";
+        document.body.style.width = "";
+        document.body.style.overflow = "";
+        document.documentElement.style.overflow = "";
+        document.body.style.overscrollBehavior = "";
+        window.scrollTo(0, lockedScrollY);
+        isLocked = false;
+      }
     };
     apply();
     mql.addEventListener("change", apply);
+
+    // Belt-and-suspenders: even with `position: fixed` on body, iOS Safari
+    // and Android Chrome still let touchmove scroll the page when the user
+    // drags on a non-scrollable element (the panel header, the input
+    // wrapper, the backdrop). We block touchmove globally and only allow it
+    // inside the messages list so chat scrolling still works. `passive:
+    // false` is required to call preventDefault.
+    const preventTouchScroll = (e: TouchEvent) => {
+      if (!mql.matches) return;
+      const path = e.composedPath();
+      const messagesEl = messagesScrollRef.current;
+      if (messagesEl && path.includes(messagesEl)) return;
+      e.preventDefault();
+    };
+    document.addEventListener("touchmove", preventTouchScroll, { passive: false });
+
     return () => {
       mql.removeEventListener("change", apply);
-      document.body.style.overflow = "";
-      document.documentElement.style.overflow = "";
-      document.body.style.overscrollBehavior = "";
+      document.removeEventListener("touchmove", preventTouchScroll);
+      if (isLocked) {
+        document.body.style.position = "";
+        document.body.style.top = "";
+        document.body.style.left = "";
+        document.body.style.right = "";
+        document.body.style.width = "";
+        document.body.style.overflow = "";
+        document.documentElement.style.overflow = "";
+        document.body.style.overscrollBehavior = "";
+        window.scrollTo(0, lockedScrollY);
+      }
+    };
+  }, [isOpen]);
+
+  // Track the visual viewport on mobile/tablet so the panel can shrink when
+  // the on-screen keyboard opens. `position: fixed` on iOS/Android anchors to
+  // the layout viewport (which doesn't shrink with the keyboard), so without
+  // this, the panel keeps its full height and iOS auto-scrolls the focused
+  // input into view — which drags the header off-screen. We expose the
+  // visible-area height as `--mc-vvh` on the host element; the panel reads it
+  // via `max-lg:h-[calc(var(--mc-vvh,100dvh)-16px)]`. Desktop ignores the var
+  // because `lg:h-[650px]` wins inside the `min-width: 1024px` media query.
+  useEffect(() => {
+    if (!isOpen || typeof window === "undefined") return;
+    const mql = window.matchMedia("(max-width: 1023px)");
+    const vv = window.visualViewport;
+    const host = document.querySelector("majestic-chat-widget") as HTMLElement | null;
+    if (!host || !vv) return;
+    const update = () => {
+      if (mql.matches) {
+        const prev = parseFloat(host.style.getPropertyValue("--mc-vvh")) || 0;
+        host.style.setProperty("--mc-vvh", `${vv.height}px`);
+        // `offsetTop` shifts when iOS/Android moves the visual viewport down
+        // to keep the focused input visible while the keyboard is up. Pinning
+        // the panel's top to that offset (plus the 8 px margin) keeps the
+        // header and panel inside the visible area instead of being scrolled
+        // off behind the URL/status bar at the top of the layout viewport.
+        host.style.setProperty("--mc-vvtop", `${vv.offsetTop}px`);
+        // When the visible area shrinks (i.e. the keyboard just opened), scroll
+        // the latest message into view so it stays just above the input field.
+        // Wait one frame so the panel has reflowed before we measure scrollHeight.
+        if (vv.height < prev) {
+          requestAnimationFrame(() => {
+            messagesEndRef.current?.scrollIntoView({ block: "end" });
+          });
+        }
+      } else {
+        host.style.removeProperty("--mc-vvh");
+        host.style.removeProperty("--mc-vvtop");
+      }
+    };
+    update();
+    // Safari fires `scroll` (not `resize`) when the keyboard opens on input
+    // focus; Android Chrome fires `resize`. Listen to both for cross-OS cover.
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    mql.addEventListener("change", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+      mql.removeEventListener("change", update);
+      host.style.removeProperty("--mc-vvh");
     };
   }, [isOpen]);
 
@@ -1000,13 +1104,16 @@ export const ChatWidget: React.FC = () => {
 
   return (
     <>
-      {/* Backdrop — only on mobile/tablet when open. Covers everything below
-          the panel (parent page + bottom nav) so the chat looks like a focused
-          modal, not edge-to-edge takeover. Tap to close. */}
+      {/* Backdrop — visible (semi-opaque) on mobile/tablet for the focused-
+          modal feel; transparent on desktop but still intercepts clicks so
+          tapping anywhere outside the panel closes it on every viewport.
+          `touch-none` blocks touch-scroll on the backdrop itself so the host
+          page can't scroll when the user drags from outside the panel toward
+          its edge. */}
       {isOpen && (
         <div
           onClick={() => setIsOpen(false)}
-          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm lg:hidden animate-fade-in-up"
+          className="fixed inset-0 z-40 touch-none bg-black/50 backdrop-blur-sm lg:bg-transparent lg:backdrop-blur-none animate-fade-in-up"
           aria-hidden="true"
         />
       )}
@@ -1020,7 +1127,9 @@ export const ChatWidget: React.FC = () => {
       <div
         aria-hidden={!isOpen}
         className={`
-          fixed inset-2 lg:inset-auto lg:bottom-24 lg:right-6
+          fixed left-2 right-2 top-[calc(var(--mc-vvtop,0px)+8px)]
+          max-lg:h-[calc(var(--mc-vvh,100dvh)-16px)]
+          lg:inset-auto lg:bottom-24 lg:right-6 lg:top-auto
           lg:w-[380px] lg:h-[650px] lg:max-h-[85vh] lg:max-w-[calc(100vw-2rem)]
           bg-white shadow-floating rounded-2xl border border-gray-200
           flex flex-col overflow-hidden
@@ -1145,8 +1254,13 @@ export const ChatWidget: React.FC = () => {
           </div>
         </div>
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 bg-gray-50/50 flex flex-col gap-4 [scrollbar-width:thin] [scrollbar-color:#CBD5E1_transparent]">
+        {/* Messages — `overscroll-contain` stops the scroll chain from
+            propagating to the body when the user reaches the top/bottom of
+            the list, so the host page never scrolls in the background.
+            Tagged with a ref so the global touchmove blocker on mobile can
+            allow finger-drag scrolling INSIDE this region while preventing it
+            anywhere else (header, footer, backdrop, host page beneath). */}
+        <div ref={messagesScrollRef} className="flex-1 overflow-y-auto overscroll-contain p-4 bg-gray-50/50 flex flex-col gap-4 [scrollbar-width:thin] [scrollbar-color:#CBD5E1_transparent]">
           {!hasUserMessage && mode === "ai" && (
             <div className="flex flex-col gap-2 mb-2 animate-fade-in-up">
               <p className="text-xs font-medium text-gray-500 ml-1">Try asking about:</p>

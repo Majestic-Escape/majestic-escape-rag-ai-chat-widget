@@ -135,6 +135,16 @@ The auto-ack guard uses `chats.updateOne` with a filter that includes `$nor: [{ 
 
 `src/middleware.ts` returns `null` (omits the ACAO header) when an origin is rejected. The browser then blocks the response cleanly. Earlier code returned `list[0]` which sent a wrong-but-valid header that's silently misleading. Don't reintroduce that pattern.
 
+### Mobile keyboard + scroll lock is interlocked — don't simplify
+
+Three pieces in `src/embed/ChatWidget.tsx` work together on `<lg` viewports and breaking any one of them re-opens UX bugs the user has already reported:
+
+1. **`visualViewport` listener** sets `--mc-vvh` (height) and `--mc-vvtop` (offsetTop) on the `<majestic-chat-widget>` host element. The panel reads these via `top-[calc(var(--mc-vvtop,0px)+8px)] max-lg:h-[calc(var(--mc-vvh,100dvh)-16px)]` so it shrinks and follows the visible area when the on-screen keyboard opens. Removing this re-introduces the "header scrolls off-screen when keyboard opens" bug.
+2. **Body lock uses the `position: fixed; top: -scrollY; width: 100%` pattern**, NOT just `overflow: hidden`. iOS Safari and Android Chrome (with the default `interactive-widget: overlays-content`) let the user drag-scroll the host page even with `overflow: hidden`. The fixed-body pattern is the only thing that actually freezes the page; `window.scrollTo(0, lockedScrollY)` on cleanup restores the user's scroll position.
+3. **Global `touchmove` blocker on `document`** — `passive: false` listener that `preventDefault`s any touchmove whose `composedPath()` doesn't include `messagesScrollRef.current`. Without this the user can still finger-drag the host page from the panel header / input wrapper / backdrop. The messages list is the only scrollable region; everything else is locked.
+
+All three are gated by `matchMedia("(max-width: 1023px)")` so desktop is untouched. The backdrop covers `inset-0` on every viewport and is transparent on desktop (`lg:bg-transparent lg:backdrop-blur-none`) so click-outside-to-close works everywhere — don't add `lg:hidden` back to it.
+
 ## Memory anchors
 
 When making changes here, remember:

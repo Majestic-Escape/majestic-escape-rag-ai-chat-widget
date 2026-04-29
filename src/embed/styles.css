@@ -9,4 +9,10 @@
 :host {
   --font-poppins: "Poppins", system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
+  /* Visual viewport height — JS updates this from window.visualViewport when
+   * the on-screen keyboard opens on mobile/tablet so the panel can shrink to
+   * the visible area. Falls back to 100dvh when JS hasn't yet run or the
+   * browser lacks visualViewport (modern Android Chrome / Safari shrink dvh
+   * for the keyboard, so fallback degrades gracefully). */
+  --mc-vvh: 100dvh;
 }
