@@ -60,8 +60,11 @@ JWT_SECRET=<exact-same-as-server.me-.env>
 GROQ_API_KEY=<groq-key>
 XAI_API_KEY=<xai-key>
 
-# Admin allow-list (comma-separated emails OR userIds)
-ADMIN_EMAILS=<your-admin-emails>
+# Admin allow-list — LEAVE BLANK in production.
+# The chatbot looks up admin status from the `admins` collection (populated by
+# admin.site's signup flow). Adding a new admin = creating their Admin record;
+# no env-var update needed. These vars stay as emergency overrides only.
+ADMIN_EMAILS=
 ADMIN_USER_IDS=
 
 # CORS — DEV/STAGING DOMAINS

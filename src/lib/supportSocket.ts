@@ -1,7 +1,7 @@
 import { Server as IOServer, Socket } from "socket.io";
 import { ObjectId } from "mongodb";
 import clientPromise from "./mongodb";
-import { verifyToken, AppJwtPayload, isAdminPayload } from "./jwt";
+import { verifyToken, AppJwtPayload, resolveIsAdmin } from "./jwt";
 import { checkRateLimit } from "./rateLimit";
 import { validateUserMessage, redactForLogs, sanitizeText } from "./moderation";
 
@@ -235,14 +235,15 @@ async function logAudit(entry: Omit<AuditEntry, "ts">): Promise<void> {
 export function mountSupportNamespace(io: IOServer): void {
   const ns = io.of("/support");
 
-  ns.use((socket, next) => {
+  ns.use(async (socket, next) => {
     const auth = socket.handshake.auth || {};
     const jwt = verifyToken(auth.token as string | undefined);
     const guestSessionId = (auth.guestSessionId as string | undefined) ?? null;
     if (!jwt && !guestSessionId) {
       return next(new Error("auth required: provide JWT token or guestSessionId"));
     }
-    const ctx: ConnContext = { jwt, isAdmin: isAdminPayload(jwt), guestSessionId };
+    const isAdmin = await resolveIsAdmin(jwt);
+    const ctx: ConnContext = { jwt, isAdmin, guestSessionId };
     (socket.data as { ctx: ConnContext }).ctx = ctx;
     next();
   });

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import clientPromise from "@/lib/mongodb";
-import { verifyToken, isAdminPayload } from "@/lib/jwt";
+import { verifyToken, resolveIsAdmin } from "@/lib/jwt";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,7 +48,7 @@ export async function GET(
       : typeof jwt?.id === "string"
       ? jwt.id
       : null;
-  const isAdmin = isAdminPayload(jwt);
+  const isAdmin = await resolveIsAdmin(jwt);
 
   const client = await clientPromise;
   const uri = process.env.MONGODB_URI || "";

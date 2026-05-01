@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runCatchUpSync } from "@/workers/catchUpSync";
-import { verifyToken, isAdminPayload } from "@/lib/jwt";
+import { verifyToken, resolveIsAdmin } from "@/lib/jwt";
 import { tryAcquireLock, releaseLock } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
   const auth = req.headers.get("authorization") || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
   const payload = verifyToken(token);
-  if (!isAdminPayload(payload)) {
+  if (!(await resolveIsAdmin(payload))) {
     return NextResponse.json({ error: "admin only" }, { status: 401 });
   }
   if (!tryAcquireLock(LOCK_NAME)) {

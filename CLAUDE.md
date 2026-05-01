@@ -105,6 +105,10 @@ In `src/app/api/chat/route.ts`, `shouldUseRag(message)` decides whether to run v
 
 If you change the prompt or add new query categories, update **both** the heuristic regexes AND the conversational directive's bullet list to keep them in lockstep.
 
+### Admin determination is database-driven
+
+`isAdminPayload()` in `src/lib/jwt.ts` is the legacy sync check (JWT claims + env-var allow-list). New code must use the async `resolveIsAdmin(payload)` instead — it adds a Mongo lookup against the `admins` collection (per `server.me/models/Admin.js`: `_id: ObjectId(userId), role: "admin", "status.banned" !== true`) so the chatbot picks up admins managed in the DB without env-var maintenance. Cached 5 min per userId in-memory. `ADMIN_EMAILS` and `ADMIN_USER_IDS` env vars are emergency overrides only — production should leave them blank. Callers: `supportSocket.ts` connection auth (line ~245) + four admin-only HTTP routes.
+
 ### Auto-ack must NEVER use AI
 
 The auto-ack on first user message is a **static template** chosen between `isFirstAck`'s two strings. It must not be:
