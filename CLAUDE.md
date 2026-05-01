@@ -109,6 +109,16 @@ If you change the prompt or add new query categories, update **both** the heuris
 
 `isAdminPayload()` in `src/lib/jwt.ts` is the legacy sync check (JWT claims + env-var allow-list). New code must use the async `resolveIsAdmin(payload)` instead — it adds a Mongo lookup against the `admins` collection (per `server.me/models/Admin.js`: `_id: ObjectId(userId), role: "admin", "status.banned" !== true`) so the chatbot picks up admins managed in the DB without env-var maintenance. Cached 5 min per userId in-memory. `ADMIN_EMAILS` and `ADMIN_USER_IDS` env vars are emergency overrides only — production should leave them blank. Callers: `supportSocket.ts` connection auth (line ~245) + four admin-only HTTP routes.
 
+### Property visibility is gated on `status: "active"` — three layers, must stay in lockstep
+
+The chatbot only embeds and surfaces properties whose `status === "active"`, mirroring the filter `user.website` uses to render its public catalogue. This keeps the chat in agreement with what users actually see — a property they can't book on the site won't be recommended in chat. The rule is enforced in **three independent places**:
+
+1. **Embed time** — `embedAndSaveProperty` in `src/lib/embedder.ts` early-returns and **unsets** the embedding when `status !== "active"`. So flipping a property to inactive in `server.me` propagates via the change stream and removes it from search within seconds.
+2. **Boot time** — `runCatchUpSync` in `src/workers/catchUpSync.ts` only iterates `{ status: "active" }` documents.
+3. **Search time** — the `$vectorSearch` stage in `src/app/api/chat/route.ts` includes `filter: { status: ACTIVE_STATUS }` so even a stale embedding cannot leak through.
+
+If you ever broaden visibility (e.g. include `pending` or `archived` properties), update all three in the same change. Touching one creates a silent inconsistency that's hard to spot in tests.
+
 ### Auto-ack must NEVER use AI
 
 The auto-ack on first user message is a **static template** chosen between `isFirstAck`'s two strings. It must not be:
