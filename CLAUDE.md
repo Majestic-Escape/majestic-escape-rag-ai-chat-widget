@@ -158,7 +158,8 @@ When making changes here, remember:
 ## When stuck
 
 1. Check [`ARCHITECTURE.md`](ARCHITECTURE.md) — section numbers map to mental modules.
-2. Check [`RAILWAY_DEPLOYMENT.md`](RAILWAY_DEPLOYMENT.md) — env vars + deployment quirks. The opening § 0 has the full per-environment env-var matrix.
-3. Check [`docs/PROD_AUDIT.md`](docs/PROD_AUDIT.md) — production readiness audit, why each env var matters, the four mandatory ones, and the smoke-check curls to run after any env change.
-3. The user-facing widget UI lives in `src/embed/`, NOT in `user.website` (that was Phase A; pre-Phase A is irrelevant).
-4. The Atlas Vector Search index is `listing_vector_index` on `listingproperties.embedding`, 3072 dim, cosine. Mismatched dimensions are the most common "chat returns nothing" cause.
+2. Check [`DEPLOY_NOW.md`](DEPLOY_NOW.md) — 1-page action checklist for deploying dev → prod (Railway + Vercel). Start here for any deployment question.
+3. Check [`RAILWAY_DEPLOYMENT.md`](RAILWAY_DEPLOYMENT.md) — env vars + deployment quirks. The opening § 0 has the full per-environment env-var matrix. Use as reference for depth.
+4. Check [`docs/PROD_AUDIT.md`](docs/PROD_AUDIT.md) — production readiness audit, why each env var matters, the four mandatory ones, and the smoke-check curls to run after any env change.
+5. The user-facing widget UI lives in `src/embed/`, NOT in `user.website` (that was Phase A; pre-Phase A is irrelevant).
+6. The Atlas Vector Search index is `listing_vector_index` on `listingproperties.embedding`, 3072 dim, cosine. Mismatched dimensions are the most common "chat returns nothing" cause.

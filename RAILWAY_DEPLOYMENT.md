@@ -15,6 +15,8 @@ If you're new to Railway, treat each section as a checklist — each one takes a
 
 ## 0. Production + Staging checklist (read this first)
 
+> **First time deploying?** Follow [`DEPLOY_NOW.md`](DEPLOY_NOW.md) — it's a 1-page action checklist that walks you from "Railway project created" to "live on prod" in order. Use this longer doc as the reference when you need depth on a specific section.
+
 The chatbot supports two consumer environments out of the box:
 
 | Environment | user.website origin | admin.site origin |
