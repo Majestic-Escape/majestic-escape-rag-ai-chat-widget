@@ -202,6 +202,7 @@ If the build itself fails, check the build logs for missing env vars or TS error
 | `MongoServerError: bad auth` | Connection string is wrong; copy a fresh one from Atlas |
 | `MONGODB_URI not set` | Same as above |
 | `Cannot find module '@google/genai'` | Stale cache — delete `.railway-cache` (rare) |
+| `Cannot read properties of undefined (reading 'startsWith')` during "Collecting page data" | A module is reading `MONGODB_URI` (or another secret) at import time. Railway's Nixpacks does NOT inject user vars during build, only at runtime. Make the access lazy — see `src/lib/mongodb.ts` for the thenable pattern. |
 | TS build errors | Reproduce locally with `npm run build` |
 
 ---
@@ -441,11 +442,12 @@ Check logs for:
 
 ### "Properties show but never refresh after I edit them"
 
-- Change Stream worker is dead. Hit `/api/health` — `isRunning` should be `true`.
-- If `false`, check logs for "ChangeStream history lost" → run `runCatchUpSync` manually:
+- Hit `/api/health` — `changeStream.isRunning` should be `true`. If `false`, the worker is between restarts; check the next bullet.
+- Logs show `[changeStream] resume token expired (oplog rotated past it) — cleared and restarting fresh` followed by a clean `[changeStream] watching listingproperties` line: **this is self-healing**. The worker detected its persisted resume token was older than Atlas's oplog window (common after long idle periods or deploy gaps on free-tier clusters), cleared the token, and started a fresh watch from "now". No action needed — but property edits that happened during the restart-loop window may have been missed. Backfill with:
   ```bash
   curl -X POST https://<your-service>/api/admin/embed-all -H "Authorization: Bearer <jwt>"
   ```
+- Logs show repeated `[changeStream] worker fatal — restarting in 5s` with NO subsequent recovery: that's a different error (network/auth/permissions). Check the error body in the log entry — usually `MongoServerError: not authorized` (Atlas user lacks `read` on `listingproperties`) or `MongoNetworkError` (Atlas IP allow-list).
 
 ### "Build fails with `Cannot find module '@types/...'`"
 

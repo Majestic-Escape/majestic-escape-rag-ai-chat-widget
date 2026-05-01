@@ -149,6 +149,18 @@ Three pieces in `src/embed/ChatWidget.tsx` work together on `<lg` viewports and 
 
 All three are gated by `matchMedia("(max-width: 1023px)")` so desktop is untouched. The backdrop covers `inset-0` on every viewport and is transparent on desktop (`lg:bg-transparent lg:backdrop-blur-none`) so click-outside-to-close works everywhere — don't add `lg:hidden` back to it.
 
+### Railway does NOT inject user env vars during build
+
+Railway's Nixpacks build only ARGs Railway-system vars (`RAILWAY_*`, `CI`, etc.) into the Dockerfile — **user-defined vars like `MONGODB_URI` are NOT available during `next build`**. Anything that reads `process.env.MONGODB_URI` (or any other secret) at module-load time will see `undefined` during the build's "Collecting page data" pass and crash. The fix is to make the access lazy: defer the `new MongoClient(uri)` until the first runtime `await`. See `src/lib/mongodb.ts` — the default export is a thenable, not an eager Promise. Don't revert that to the eager pattern; it'll work locally (where `.env.local` is loaded) but blow up on Railway. Same principle applies to any new module-level service init.
+
+### Change stream resume token can expire — worker now self-heals
+
+`src/workers/changeStream.ts` persists the resume token to `changestream_resume.{_id: "listingproperties"}` after every successful event. Atlas's smaller cluster tiers rotate the oplog aggressively when idle, so any deploy gap longer than the oplog window invalidates the token. The worker catches `MongoServerError` code 286 (`ChangeStreamHistoryLost`) specifically and clears the persisted token before the next iteration — the restart loop then runs `coll.watch` without `resumeAfter` and starts fresh from "now". Don't remove this branch; without it, every cold deploy after a long idle period hits an infinite 5s sleep loop in the worker. Property changes that happened during the restart-loop window can be backfilled with `POST /api/admin/embed-all` (admin JWT required).
+
+### Chatbot root path redirects to `majesticescape.in`
+
+`next.config.ts` has an explicit redirect `source: "/" → destination: "https://majesticescape.in"` (307). When the service is hosted on a branded subdomain like `chat.majesticescape.in`, this prevents users who type the URL directly into a browser from seeing the bare Next.js placeholder page. Bundle (`/embed/*`), API (`/api/*`), and Socket.IO (`/socket.io/*`) paths are explicitly NOT matched and continue to serve normally. If you ever change this, make sure the rule is still root-only — broadening to `:path*` would break every API call.
+
 ## Memory anchors
 
 When making changes here, remember:

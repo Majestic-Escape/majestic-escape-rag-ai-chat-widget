@@ -182,25 +182,45 @@ curl https://chat.me.coderelix.in/api/health
 
 ## § 9. Promote to production
 
-Repeat §§ 3, 4, 6, 7 in a **second Railway service** (same project, same repo, branch `main`) with these prod values:
+**Order matters here.** Don't change DNS until the new Railway service is built and ready, or the chatbot domain will be unreachable during the gap.
+
+### 9a. Create the production Railway service
+
+In the same `majestic-rag-chatbot-server` project: **+ New** → **GitHub Repo** → pick the chat widget repo, branch `main`. Set production env vars:
 
 | Var | Prod value |
 |---|---|
+| `MONGODB_URI` | **prod** Atlas DB (NOT dev) |
+| `JWT_SECRET` | **prod** server.me secret (NOT dev) — must match exactly |
+| `GEMINI_API_KEY` | prod or shared key |
+| `GROQ_API_KEY` / `XAI_API_KEY` | prod or shared keys |
 | `ALLOWED_ORIGINS` | `https://majesticescape.in,https://www.majesticescape.in,https://admin.majesticescape.in` |
 | `NEXT_PUBLIC_PROPERTY_BASE_URL` | `https://majesticescape.in` |
-| Custom domain | `chat.majesticescape.in` |
-| `MONGODB_URI` | **prod** Atlas DB (NOT dev) |
-| `JWT_SECRET` | **prod** server.me secret (NOT dev) |
-| `ADMIN_EMAILS` | prod admin emails |
+| `DAILY_AI_LIMIT_USER` / `DAILY_AI_LIMIT_IP` | `200` / `30` |
+| `ADMIN_EMAILS` / `ADMIN_USER_IDS` | **leave blank** — DB-backed admin lookup handles this |
 
-On Vercel:
+Wait for the build to go Active. Verify with `curl https://<new-service>.up.railway.app/api/health` → `db:true, changeStream.isRunning:true`.
 
-| Site | Var | Prod value |
-|---|---|---|
-| user.website (Production env only) | `NEXT_PUBLIC_CHAT_WIDGET_URL` | `https://chat.majesticescape.in/embed/widget.js` |
-| admin.site (Production env only) | `NEXT_PUBLIC_SUPPORT_SOCKET_URL` | `https://chat.majesticescape.in` |
+### 9b. Remove the existing `chat.majesticescape.in` redirect
 
-Re-run the § 8 smoke tests against the prod URLs.
+If `chat.majesticescape.in` is currently set up to redirect to `majesticescape.in` at the DNS / hosting layer (Cloudflare page rule, Vercel domain redirect, etc.), **remove that redirect now**. It will break the chatbot bundle, API, and Socket.IO upgrades the moment Railway takes over the subdomain. (The chatbot's own `next.config.ts` redirect handles browser navigation to `/` — see § 10 below for what stays clickable.)
+
+### 9c. Point DNS at Railway
+
+Railway → prod service → **Settings** → **Networking** → **Custom Domain** → add `chat.majesticescape.in`. Railway gives you a CNAME target. Update DNS, wait 5–60 min for propagation. Railway provisions a TLS cert automatically.
+
+### 9d. Switch consumer Vercel sites to the prod URL
+
+| Site | Var | Prod value | Vercel env |
+|---|---|---|---|
+| `user.website` | `NEXT_PUBLIC_CHAT_WIDGET_URL` | `https://chat.majesticescape.in/embed/widget.js` | Production |
+| `admin.site` | `NEXT_PUBLIC_SUPPORT_SOCKET_URL` | `https://chat.majesticescape.in` | Production |
+
+Redeploy each Vercel site. Then re-run the § 8 smoke curls against `chat.majesticescape.in`.
+
+### 9e. What still works at chat.majesticescape.in/
+
+Browser navigation to `https://chat.majesticescape.in/` returns a 307 redirect to `https://majesticescape.in/` (configured in the chatbot's `next.config.ts`, ships with the code). So you do NOT need a DNS-layer redirect — the app itself handles the "no broken pages" UX. Bundle, API, and Socket.IO paths are NOT affected by this redirect.
 
 ---
 
