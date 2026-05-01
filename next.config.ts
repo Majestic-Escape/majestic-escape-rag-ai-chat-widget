@@ -9,6 +9,20 @@ const nextConfig: NextConfig = {
   },
   // Don't fail builds on lint warnings during initial scaffolding
   eslint: { ignoreDuringBuilds: true },
+  // Anyone navigating to the root of the chatbot's domain in a browser
+  // (e.g. typing chat.majesticescape.in directly) gets redirected to the
+  // main marketing site instead of seeing a placeholder Next.js page.
+  // Bundle (`/embed/*`), API (`/api/*`), and Socket.IO (`/socket.io/*`)
+  // paths are explicitly NOT matched and continue to serve normally.
+  async redirects() {
+    return [
+      {
+        source: "/",
+        destination: "https://majesticescape.in",
+        permanent: false,
+      },
+    ];
+  },
   async headers() {
     return [
       {
