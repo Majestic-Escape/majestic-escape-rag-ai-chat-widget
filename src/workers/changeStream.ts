@@ -38,7 +38,38 @@ export async function startChangeStreamWorker(): Promise<void> {
     try {
       await runOnePass();
     } catch (err) {
-      console.error("[changeStream] worker fatal — restarting in 5s", err);
+      const code = (err as { code?: number }).code;
+      const codeName = (err as { codeName?: string }).codeName;
+
+      // ChangeStreamHistoryLost (code 286): the saved resume token is older
+      // than the current oplog window. Atlas's smaller oplog tiers rotate
+      // aggressively when the cluster is idle, so any deploy gap longer
+      // than a few minutes can invalidate the token. Without this branch
+      // the worker retries the same dead token forever (5s sleep loop).
+      // Clear the stale token so the next iteration starts a fresh watch
+      // from "now". Boot-time runCatchUpSync already covered drift up to
+      // boot; any property changes that happened during the restart loop
+      // can be backfilled with POST /api/admin/embed-all if needed.
+      if (code === 286 || codeName === "ChangeStreamHistoryLost") {
+        try {
+          const client = await clientPromise;
+          const uri = process.env.MONGODB_URI || "";
+          const dbName = uri.split("/").pop()?.split("?")[0] || "master-db";
+          await client
+            .db(dbName)
+            .collection<{ _id: string; token: ResumeToken; ts: Date }>(
+              "changestream_resume"
+            )
+            .deleteOne({ _id: "listingproperties" });
+          console.warn(
+            "[changeStream] resume token expired (oplog rotated past it) — cleared and restarting fresh"
+          );
+        } catch (clearErr) {
+          console.error("[changeStream] failed to clear stale resume token", clearErr);
+        }
+      } else {
+        console.error("[changeStream] worker fatal — restarting in 5s", err);
+      }
       await new Promise((r) => setTimeout(r, 5000));
     }
   }
