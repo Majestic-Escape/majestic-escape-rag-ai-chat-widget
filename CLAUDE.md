@@ -167,6 +167,18 @@ Railway's Nixpacks build only ARGs Railway-system vars (`RAILWAY_*`, `CI`, etc.)
 
 `src/workers/changeStream.ts` persists the resume token to `changestream_resume.{_id: "listingproperties"}` after every successful event. Atlas's smaller cluster tiers rotate the oplog aggressively when idle, so any deploy gap longer than the oplog window invalidates the token. The worker catches `MongoServerError` code 286 (`ChangeStreamHistoryLost`) specifically and clears the persisted token before the next iteration — the restart loop then runs `coll.watch` without `resumeAfter` and starts fresh from "now". Don't remove this branch; without it, every cold deploy after a long idle period hits an infinite 5s sleep loop in the worker. Property changes that happened during the restart-loop window can be backfilled with `POST /api/admin/embed-all` (admin JWT required).
 
+### AI provider fallback chain — cascade contract
+
+`src/app/api/chat/route.ts` runs `Gemini → Groq → xAI` as primary → fallback → fallback. The contract is: **each provider hop must wrap its call in try/catch and fall through to the next provider if no tokens have been emitted yet** (`assembledReply.length === 0`). Once a token has reached the client we can't roll back, so post-token failures surface as errors. Currently the cascade kicks in for: (a) Gemini error with `status === 429`, (b) Groq fetch failure (4xx/5xx) before its first chunk is parsed. Don't simplify the inner try/catch around Groq — without it, a Groq 401 (e.g., from a misconfigured prod env var) silently bypasses xAI and hits the user as a generic "trouble connecting" message. The outer catch logs `[chat/route] Stream error (provider=%s, assembled=%d chars)` so an operator can tell whether all three hops failed vs a single one bombed.
+
+### Multi-turn date carry-over scans last 5 user turns
+
+`src/app/api/chat/route.ts`'s booking-aware filter builds `dateRangeText` from the current message + last 5 user turns. The window matters: a user typing "next weekend" → small talk → "show me villas" needs the date filter to still apply on the third message. Don't shrink to `slice(-2)`; a 2-turn window misses common conversation depth and the booking-availability flag stops working mid-conversation. Don't grow much past 5 either — `MAX_HISTORY_TURNS=12` caps total turns at 12 (~6 user) so 5 already covers most of the available context.
+
+### Input `maxLength` mirrors server `MAX_MESSAGE_CHARS`
+
+The chat input in `src/embed/ChatWidget.tsx` carries `maxLength={2000}` matching `MAX_MESSAGE_CHARS` in `src/lib/moderation.ts`. Keep these in sync. Drift means a user pasting a long transcript sees a generic "trouble connecting" banner instead of natural truncation, because the server returns a bare 400 and the frontend renders the same error for any non-200. If you raise the server cap, raise the input cap; if you lower one, lower both.
+
 ### Chatbot root path redirects to `majesticescape.in`
 
 `next.config.ts` has an explicit redirect `source: "/" → destination: "https://majesticescape.in"` (307). When the service is hosted on a branded subdomain like `chat.majesticescape.in`, this prevents users who type the URL directly into a browser from seeing the bare Next.js placeholder page. Bundle (`/embed/*`), API (`/api/*`), and Socket.IO (`/socket.io/*`) paths are explicitly NOT matched and continue to serve normally. If you ever change this, make sure the rule is still root-only — broadening to `:path*` would break every API call.

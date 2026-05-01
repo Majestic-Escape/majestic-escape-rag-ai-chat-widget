@@ -425,10 +425,15 @@ export async function POST(req: NextRequest) {
         const queryEmbedding = await embedQuery(cleanMessage);
         const candidates = await vectorSearch(queryEmbedding, 12);
         if (candidates.length > 0) {
-          // Booking-aware filtering — search in message + last user history turn
+          // Booking-aware filtering — scan recent user history so a date
+          // mentioned a few turns back ("this weekend") still applies when
+          // the user later says "show me villas". Window of 5 prior user
+          // turns + current message covers the common conversation depth
+          // before history truncation kicks in (MAX_HISTORY_TURNS=12 → 6
+          // user turns max).
           const historyText = safeHistory
             .filter((m) => m.role === "user")
-            .slice(-2)
+            .slice(-5)
             .map((m) => m.text)
             .join(" ");
           const range = extractDateRange(`${cleanMessage} ${historyText}`);
@@ -610,12 +615,31 @@ export async function POST(req: NextRequest) {
             }
           } else if (provider === "groq") {
             const groqKey = process.env.GROQ_API_KEY!;
-            await streamOpenAICompatible(
-              "https://api.groq.com/openai/v1/chat/completions",
-              groqKey,
-              "llama-3.3-70b-versatile",
-              controller
-            );
+            const xaiKey = process.env.XAI_API_KEY;
+            try {
+              await streamOpenAICompatible(
+                "https://api.groq.com/openai/v1/chat/completions",
+                groqKey,
+                "llama-3.3-70b-versatile",
+                controller
+              );
+            } catch (groqErr) {
+              // Cascade Groq → xAI if no tokens were emitted yet (i.e. failure
+              // happened during the initial fetch / handshake, not mid-stream).
+              // Once any text has reached the client we can't roll back, so we
+              // surface the error in that case.
+              if (assembledReply.length > 0 || !xaiKey) throw groqErr;
+              console.warn(
+                "[chat/route] Groq failed, cascading to xAI:",
+                (groqErr as Error).message?.slice(0, 200)
+              );
+              await streamOpenAICompatible(
+                "https://api.x.ai/v1/chat/completions",
+                xaiKey,
+                "grok-3-mini",
+                controller
+              );
+            }
           } else {
             const xaiKey = process.env.XAI_API_KEY;
             if (!xaiKey) throw new Error("No AI provider available");
@@ -628,7 +652,16 @@ export async function POST(req: NextRequest) {
           }
           emitDone();
         } catch (streamErr) {
-          console.error("[chat/route] Stream error:", streamErr);
+          // Log structured detail so an operator can tell whether all three
+          // providers failed vs a single hop bombed. The user-facing copy
+          // stays generic on purpose — leaking provider names to the client
+          // gives an attacker free reconnaissance.
+          console.error(
+            "[chat/route] Stream error (provider=%s, assembled=%d chars):",
+            provider,
+            assembledReply.length,
+            streamErr
+          );
           controller.enqueue(
             encoder.encode(`data: Sorry, I ran into an issue. Please try again.\n\n`)
           );

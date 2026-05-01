@@ -1378,6 +1378,7 @@ export const ChatWidget: React.FC = () => {
                   placeholder={mode === "ai" ? "Ask AI to find stays..." : "Type your message..."}
                   className="w-full bg-gray-100 border border-transparent text-graphite text-[14px] rounded-full pl-4 pr-12 py-3 focus:outline-none focus:bg-white focus:border-primaryGreen focus:ring-1 focus:ring-primaryGreen transition-all placeholder:text-gray-400 disabled:opacity-60"
                   disabled={isLoading || (mode === "support" && !support.isConnected)}
+                  maxLength={2000}
                 />
               <button
                 type="submit"
