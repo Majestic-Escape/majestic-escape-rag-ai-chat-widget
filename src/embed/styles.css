@@ -16,3 +16,40 @@
    * for the keyboard, so fallback degrades gracefully). */
   --mc-vvh: 100dvh;
 }
+
+/* Launcher animations — scoped inside the Shadow DOM. The robot mascot uses:
+ *  - mc-float: a slow ±3px vertical bob, like a hovercraft idle
+ *  - mc-halo: a pulsing primaryGreen ring that fades outward (calls attention
+ *    without being a hard "notification" cue)
+ *  - mc-wiggle: tiny rotational wave on hover, plays once
+ * All three respect prefers-reduced-motion via the media query at the bottom. */
+@keyframes mc-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+@keyframes mc-halo {
+  /* The visible pulse occupies the first 15% of the cycle (~1.5s out of 10s),
+   * then stays invisible until the next iteration — gives the launcher a
+   * gentle "ping" every 10s instead of a continuous ring. */
+  0% { transform: scale(0.85); opacity: 0.55; }
+  15% { transform: scale(1.6); opacity: 0; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+@keyframes mc-wiggle {
+  0% { transform: rotate(0deg); }
+  25% { transform: rotate(-6deg); }
+  50% { transform: rotate(5deg); }
+  75% { transform: rotate(-3deg); }
+  100% { transform: rotate(0deg); }
+}
+@keyframes mc-pop-in {
+  0% { transform: scale(0); opacity: 0; }
+  60% { transform: scale(1.1); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-float, .mc-halo, .mc-wiggle, .mc-pop-in {
+    animation: none !important;
+  }
+}

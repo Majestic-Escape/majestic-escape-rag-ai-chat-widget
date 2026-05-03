@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useCurrentPathname } from "./utils";
+import { useCurrentPathname, getBackendUrl } from "./utils";
 import {
-  Bot,
   X,
   Send,
   Loader2,
@@ -1405,24 +1404,79 @@ export const ChatWidget: React.FC = () => {
         </div>
       </div>
 
-      {/* Launcher Button */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
+      {/* Launcher Button — robot mascot with floating idle bob, soft halo
+          pulse for ambient attention, and a one-shot wiggle on hover. The
+          launcher is wrapped in a sized container so the absolutely-
+          positioned halo doesn't shift the bottom-right offset of the panel.
+          When the chat is open the launcher fades + scales out (instead of
+          rotating, which looked off with the mascot's face). */}
+      <div
         className={`
-          w-14 h-14 rounded-full shadow-floating flex items-center justify-center transition-all duration-300 hover:scale-105
-          ${
-            isOpen
-              ? "bg-gray-100 text-gray-600 rotate-90 opacity-0 pointer-events-none absolute"
-              : "bg-primaryGreen text-[#daf3ce] rotate-0 opacity-100 relative"
-          }
+          relative w-16 h-16 transition-[opacity,transform] duration-300 ease-out
+          ${isOpen ? "opacity-0 scale-75 pointer-events-none absolute" : "opacity-100 scale-100"}
         `}
-        aria-label="Open Majestic AI chat"
       >
-        <Bot className="w-6 h-6" />
-        {!isOpen && messages.length === 0 && (
-          <span className="absolute top-0 right-0 w-3.5 h-3.5 bg-red-500 border-2 border-white rounded-full" />
+        {/* Soft pulsing halo — primaryGreen ring fading outward. Pure visual
+            cue; aria-hidden so screen readers don't announce it. */}
+        {!isOpen && (
+          <span
+            aria-hidden="true"
+            className="absolute inset-0 rounded-full bg-primaryGreen/40 mc-halo pointer-events-none"
+            style={{ animation: "mc-halo 10s ease-out infinite" }}
+          />
         )}
-      </button>
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          className="
+            group relative w-16 h-16 rounded-full shadow-floating
+            flex items-center justify-center
+            bg-gradient-to-br from-white via-white to-lightGreen/40
+            ring-2 ring-primaryGreen/20 hover:ring-primaryGreen/50
+            transition-all duration-300 ease-out
+            hover:scale-110 hover:shadow-[0_12px_36px_rgba(54,98,31,0.35)]
+            active:scale-95
+            focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-primaryGreen/40
+          "
+          aria-label="Open Majestic AI chat"
+        >
+          {/* Robot mascot — served from the widget origin so it survives
+              build:embed (which only wipes public/embed). Idle float lives on
+              the image so the halo and ring stay still. Hover wiggles the
+              robot once for a friendly greeting. */}
+          <img
+            src={`${getBackendUrl()}/robot.png`}
+            alt=""
+            draggable={false}
+            className="
+              w-11 h-11 select-none pointer-events-none
+              drop-shadow-[0_2px_4px_rgba(0,0,0,0.12)]
+            "
+            style={{ animation: "mc-float 3.6s ease-in-out infinite" }}
+            onMouseEnter={(e) => {
+              const el = e.currentTarget;
+              el.style.animation = "mc-wiggle 0.6s ease-in-out, mc-float 3.6s ease-in-out infinite 0.6s";
+              el.addEventListener(
+                "animationend",
+                () => {
+                  el.style.animation = "mc-float 3.6s ease-in-out infinite";
+                },
+                { once: true }
+              );
+            }}
+          />
+          {/* New-conversation indicator — small green-tinted dot with a
+              gentle bounce so it reads as "hey, fresh chat" without the
+              alarm-bell red of the previous version. */}
+          {!isOpen && messages.length === 0 && (
+            <span
+              aria-hidden="true"
+              className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-brightGreen border-2 border-white rounded-full mc-pop-in"
+              style={{ animation: "mc-pop-in 0.4s ease-out 0.6s both, bounce 2s ease-in-out 1s 3" }}
+            />
+          )}
+        </button>
+      </div>
       </div>
     </>
   );

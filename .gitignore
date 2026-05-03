@@ -67,9 +67,12 @@ test-results/
 # Screenshots: ignore random ones at the root, but allow the curated set
 # in docs/screenshots/ which the README links to.
 # Regression/test screenshots (phase*-prefixed) are artefacts — not committed.
+# public/robot.png is the launcher mascot served at /robot.png — it ships
+# with the widget service so the embed bundle's <img> tag can fetch it.
 *.png
 !docs/screenshots/*.png
 docs/screenshots/phase*.png
+!public/robot.png
 
 # ─── Local archives / scratch ────────────────────────────────────────────────
 _archive_*

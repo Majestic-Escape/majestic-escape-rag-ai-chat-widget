@@ -64,7 +64,21 @@ PROPERTY MENTIONS — IMPORTANT:
 LOCATION ACCURACY — STRICT:
 - Only state that a property is "in" or "near" a location if the property's own data (city, state) explicitly supports it. Never infer geographic proximity to match the user's query.
 - If the search returns no properties in the user's requested location, say so honestly: e.g. "I don't currently have listings in Mumbai, but here are stays in Goa and Maharashtra that might interest you."
-- Do NOT claim a Goa property is "near Mumbai" or a Maharashtra property is "near Delhi" — these are factually wrong and mislead guests.`;
+- Do NOT claim a Goa property is "near Mumbai" or a Maharashtra property is "near Delhi" — these are factually wrong and mislead guests.
+- If the user asks for stays "near me / nearby / in my area" and you cannot identify a city/area/landmark anywhere in their messages, ask them where they are before recommending anything. Do not fall back on whatever Goa/Maharashtra results the search produced — those would be wrong.`;
+
+// Appended when the user asks for stays "near me" / "nearby" / "in my area"
+// without naming a city. We don't auto-locate the browser, so the only honest
+// response is to ask. Without this directive the LLM either guesses a city
+// from earlier turns or hallucinates a recommendation — both bad UX.
+const LOCATION_REQUIRED_DIRECTIVE = `
+
+LOCATION-NEEDED MODE — STRICT (this turn):
+- The user asked for stays near them, nearby, or in their area, but did NOT name a city/area.
+- We do NOT know the user's location. Do not guess, do not pull a city from earlier turns, do not assume.
+- Reply with ONE short friendly question asking where they are right now. Example: "Happy to find stays near you! Which city or area are you in?"
+- Do NOT recommend any properties this turn. Do NOT mention any property names.
+- Do NOT include phrases like "based on your location" or "in your area" in the reply — you genuinely don't have it yet.`;
 
 // Appended to the system prompt only when the intent gate decides this turn
 // is conversational (greeting / thanks / policy / booking-mgmt / meta).
@@ -228,6 +242,53 @@ async function findBlockedPropertyIds(
 // unrelated stays — even if cosine similarity squeaks above the score floor.
 // Discovery messages ("villa in goa with a pool", "weekend stays under 5000")
 // fall through to the default branch and trigger the RAG pipeline as before.
+// "Stays near me" trigger — covers the common phrasings in English. If the
+// user used one of these AND didn't accompany it with any other meaningful
+// word (i.e. a city/area/landmark), we ask for their location.
+const NEAR_ME_RE =
+  /\b(near\s*me|near\s*by|nearby|close\s*(to|by)\s*me|around\s*me|in\s*my\s*(area|location|city|town|neighbourhood|neighborhood|vicinity|region|locality)|near\s*my\s*(location|place|area|city|town|home|spot)|where\s*i\s*am)\b/i;
+
+// Travel-search fillers that don't carry location information. Anything
+// alphabetic of length ≥ 3 left over after stripping these is treated as a
+// possible location signal — including cities we've never heard of. This
+// keeps the heuristic PAN-India safe: a user typing "stays near me in
+// Bhopal" or "places nearby in Hampi" is NOT asked again, even though the
+// platform never had to be told that Bhopal/Hampi are places. The bias is
+// deliberately toward NOT asking — false-asking after a user named a city
+// is a much worse UX than running vector search with weak signal.
+//
+// Update if you see the bot proceeding with RAG when the user clearly said
+// nothing but the trigger; do NOT add city names here.
+const LOCATION_FILLER_RE =
+  /\b(stays?|hotels?|villas?|hostels?|resorts?|homestays?|cottages?|properties?|apartments?|places?|spots?|options?|find|show|get|give|tell|need|want|looking|search(?:ing)?|browse|recommend|suggest(?:ion)?s?|me|us|some|any|all|the|a|an|please|kindly|with|and|or|in|on|at|to|of|for|from|by|near|nearby|around|close|under|below|less|than|over|above|more|rs|inr|rupees?|good|nice|best|top|cheap|cheapest|affordable|budget|luxury|premium|pool|wifi|beach|mountain|mountains|hill|hills|view|sea|ocean|lake|river|today|tomorrow|tonight|weekend|night|nights|days?|week|month|guests?|people|persons?|kids?|children|family|couple|solo|i|am|is|are|was|were|will|would|can|could|may|might|peaceful|quiet|romantic|adventure|relaxing|cozy|spacious|what|whats|where|why|how|when|which|who|do|does|don|t|s|have|got|let|here|there)\b/gi;
+
+function locationResidualWords(text: string): string[] {
+  // After /[^a-z\s]/g, " " collapse, /g flag is needed on filler RE so
+  // replace iterates across multiple matches in one string.
+  return text
+    .toLowerCase()
+    .replace(NEAR_ME_RE, " ")
+    .replace(LOCATION_FILLER_RE, " ")
+    .replace(/[^a-z\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3);
+}
+
+function needsLocationAsk(message: string, recentUserMessages: string[]): boolean {
+  if (!NEAR_ME_RE.test(message)) return false;
+  // If the user mentioned anything that survives the filler-strip in the
+  // current message, treat it as a possible location signal and let RAG run.
+  if (locationResidualWords(message).length > 0) return false;
+  // Mirror the date-range carry-over (line ~434): scan up to the last 5
+  // user turns. If the user said "I'm in Pune" three turns ago and now
+  // says "stays nearby", we already know where they are. The cap matches
+  // the existing date scanner so behaviour is consistent.
+  for (const prior of recentUserMessages.slice(-5)) {
+    if (locationResidualWords(prior).length > 0) return false;
+  }
+  return true;
+}
+
 function shouldUseRag(message: string): boolean {
   const msg = message.trim().toLowerCase();
   if (msg.length < 4) return false;
@@ -419,8 +480,14 @@ export async function POST(req: NextRequest) {
 
     let contextBlock = "";
     let cardProperties: PropertyResult[] = [];
+    const recentUserText = safeHistory.filter((m) => m.role === "user").map((m) => m.text);
+    const needsLocation = needsLocationAsk(cleanMessage, recentUserText);
     const isConversationalTurn = !shouldUseRag(cleanMessage);
-    if (!isConversationalTurn) {
+    // needsLocation forces conversational mode (no vector search, no cards):
+    // running RAG without a location yields irrelevant results, and the
+    // directive below will steer the LLM to ask before suggesting anything.
+    const skipRag = isConversationalTurn || needsLocation;
+    if (!skipRag) {
       try {
         const queryEmbedding = await embedQuery(cleanMessage);
         const candidates = await vectorSearch(queryEmbedding, 12);
@@ -468,11 +535,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Pick exactly one mode directive — needsLocation wins because that's the
+    // most specific signal (user asked for "near me" without a city). Falls
+    // back to the generic conversational directive for greetings/policy/meta,
+    // and to nothing in discovery mode where RAG context speaks for itself.
+    const modeDirective = needsLocation
+      ? LOCATION_REQUIRED_DIRECTIVE
+      : isConversationalTurn
+      ? CONVERSATIONAL_DIRECTIVE
+      : "";
     const systemPrompt =
-      BASE_SYSTEM_PROMPT +
-      contextBlock +
-      (isConversationalTurn ? CONVERSATIONAL_DIRECTIVE : "") +
-      SAFETY_DIRECTIVE;
+      BASE_SYSTEM_PROMPT + contextBlock + modeDirective + SAFETY_DIRECTIVE;
 
     const cardData = cardProperties.map((p) => ({
       _id: String(p._id),
