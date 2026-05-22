@@ -506,7 +506,31 @@ interface MenuSection {
   tiles: MenuTile[];
 }
 
+// "Conversation" is first so the conversation-control actions (talk to a
+// person / start fresh) are visible the instant the menu opens — for a
+// logged-in user the later sections would otherwise push them below the fold.
 const MENU_SECTIONS: MenuSection[] = [
+  {
+    id: "conversation",
+    title: "Conversation",
+    tiles: [
+      {
+        id: "talk-person",
+        label: "Talk to a person",
+        description: "Chat with our support team",
+        icon: <MessageSquare className="w-4 h-4" />,
+        action: { kind: "support" },
+        requiresLogin: true,
+      },
+      {
+        id: "start-fresh",
+        label: "Start fresh",
+        description: "Clear this conversation",
+        icon: <RotateCcw className="w-4 h-4" />,
+        action: { kind: "start-fresh" },
+      },
+    ],
+  },
   {
     id: "discover",
     title: "Discover",
@@ -576,27 +600,6 @@ const MENU_SECTIONS: MenuSection[] = [
       },
     ],
   },
-  {
-    id: "conversation",
-    title: "Conversation",
-    tiles: [
-      {
-        id: "talk-person",
-        label: "Talk to a person",
-        description: "Chat with our support team",
-        icon: <MessageSquare className="w-4 h-4" />,
-        action: { kind: "support" },
-        requiresLogin: true,
-      },
-      {
-        id: "start-fresh",
-        label: "Start fresh",
-        description: "Clear this conversation",
-        icon: <RotateCcw className="w-4 h-4" />,
-        action: { kind: "start-fresh" },
-      },
-    ],
-  },
 ];
 
 interface MainMenuDrawerProps {
@@ -623,18 +626,23 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
   const drawerRef = useRef<HTMLDivElement | null>(null);
   const [confirmStartFresh, setConfirmStartFresh] = useState(false);
 
-  // Esc closes the drawer (but not the whole chat).
+  // Esc cancels the start-fresh confirmation if it's up; otherwise closes the
+  // drawer (but never the whole chat).
   useEffect(() => {
     if (!isOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        if (confirmStartFresh) {
+          setConfirmStartFresh(false);
+        } else {
+          onClose();
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, confirmStartFresh]);
 
   // Reset the inline confirmation each time the drawer is reopened.
   useEffect(() => {
@@ -686,7 +694,7 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
         aria-modal="true"
         aria-label="Chatbot menu"
         className={`
-          absolute left-0 right-0 top-0 z-40 max-h-[80%] overflow-y-auto
+          absolute left-0 right-0 top-0 z-40 max-h-[88%] overflow-y-auto
           bg-white/98 backdrop-blur-md shadow-xl rounded-t-2xl
           transition-transform duration-200 ease-out
           ${isOpen ? "translate-y-0" : "-translate-y-full pointer-events-none"}
@@ -711,72 +719,75 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
                 {section.title}
               </p>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                {section.tiles.map((tile) => {
-                  const isStartFreshConfirm =
-                    tile.action.kind === "start-fresh" && confirmStartFresh;
-
-                  if (isStartFreshConfirm) {
-                    return (
-                      <div
-                        key={tile.id}
-                        className="col-span-2 md:col-span-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2.5"
-                      >
-                        <p className="text-[12px] text-graphite font-medium mb-2">
-                          Clear this conversation?
-                        </p>
-                        <p className="text-[11px] text-stone mb-2.5">
-                          {mode === "support"
-                            ? "Your support history will still be saved on the server. This only clears the visible thread."
-                            : "Your AI history is saved on the server — reload anytime to bring it back."}
-                        </p>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setConfirmStartFresh(false)}
-                            className="text-[12px] font-medium px-3 py-1.5 rounded-full border border-gray-200 hover:bg-gray-50 text-graphite"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              onStartFresh();
-                              setConfirmStartFresh(false);
-                              onClose();
-                            }}
-                            className="text-[12px] font-medium px-3 py-1.5 rounded-full bg-primaryGreen text-white hover:bg-brightGreen"
-                          >
-                            Yes, start fresh
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <button
-                      key={tile.id}
-                      type="button"
-                      onClick={() => handleTile(tile)}
-                      className="flex flex-col items-start gap-1.5 rounded-2xl border border-gray-100 bg-white hover:border-primaryGreen hover:shadow-sm transition-all px-3 py-2.5 text-left min-h-[44px]"
-                    >
-                      <span className="w-7 h-7 rounded-lg bg-lightGreen/40 text-primaryGreen flex items-center justify-center shrink-0">
-                        {tile.icon}
-                      </span>
-                      <span className="text-[12px] font-semibold text-graphite leading-tight">
-                        {tile.label}
-                      </span>
-                      <span className="text-[10px] text-stone leading-tight line-clamp-2">
-                        {tile.description}
-                      </span>
-                    </button>
-                  );
-                })}
+                {section.tiles.map((tile) => (
+                  <button
+                    key={tile.id}
+                    type="button"
+                    onClick={() => handleTile(tile)}
+                    className="flex flex-col items-start gap-1.5 rounded-2xl border border-gray-100 bg-white hover:border-primaryGreen hover:shadow-sm transition-all px-3 py-2.5 text-left min-h-[44px]"
+                  >
+                    <span className="w-7 h-7 rounded-lg bg-lightGreen/40 text-primaryGreen flex items-center justify-center shrink-0">
+                      {tile.icon}
+                    </span>
+                    <span className="text-[12px] font-semibold text-graphite leading-tight">
+                      {tile.label}
+                    </span>
+                    <span className="text-[10px] text-stone leading-tight line-clamp-2">
+                      {tile.description}
+                    </span>
+                  </button>
+                ))}
               </div>
             </div>
           ))}
         </div>
       </div>
+
+      {/* Start-fresh confirmation — centred over the whole panel so it's
+          always fully visible, never pushed below a scroll fold. Backdrop
+          tap or Esc cancels; the inner card stops click propagation. */}
+      {confirmStartFresh && (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center bg-graphite/40 backdrop-blur-sm p-5 animate-fade-in-up"
+          onClick={() => setConfirmStartFresh(false)}
+        >
+          <div
+            role="alertdialog"
+            aria-label="Clear this conversation"
+            className="w-full max-w-[300px] bg-white rounded-2xl shadow-xl border border-gray-200 p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-[15px] font-semibold text-graphite mb-1.5">
+              Clear this conversation?
+            </p>
+            <p className="text-[12px] text-stone leading-relaxed mb-4">
+              {mode === "support"
+                ? "Your support history will still be saved on the server. This only clears the visible thread."
+                : "Your AI history is saved on the server — reload anytime to bring it back."}
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmStartFresh(false)}
+                className="flex-1 text-[13px] font-medium px-3 py-2 rounded-full border border-gray-200 hover:bg-gray-50 text-graphite transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onStartFresh();
+                  setConfirmStartFresh(false);
+                  onClose();
+                }}
+                className="flex-1 text-[13px] font-medium px-3 py-2 rounded-full bg-primaryGreen text-white hover:bg-brightGreen transition-colors"
+              >
+                Yes, start fresh
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 };
@@ -1129,7 +1140,7 @@ export const ChatWidget: React.FC = () => {
           fixed left-2 right-2 top-[calc(var(--mc-vvtop,0px)+8px)]
           max-lg:h-[calc(var(--mc-vvh,100dvh)-16px)]
           lg:inset-auto lg:bottom-24 lg:right-6 lg:top-auto
-          lg:w-[380px] lg:h-[650px] lg:max-h-[85vh] lg:max-w-[calc(100vw-2rem)]
+          lg:w-[400px] lg:h-[760px] lg:max-h-[86vh] lg:max-w-[calc(100vw-2rem)]
           bg-white shadow-floating rounded-2xl border border-gray-200
           flex flex-col overflow-hidden
           origin-bottom-right transition-[opacity,transform] duration-300 ease-out
