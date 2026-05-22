@@ -183,6 +183,36 @@ The chat input in `src/embed/ChatWidget.tsx` carries `maxLength={2000}` matching
 
 `next.config.ts` has an explicit redirect `source: "/" → destination: "https://majesticescape.in"` (307). When the service is hosted on a branded subdomain like `chat.majesticescape.in`, this prevents users who type the URL directly into a browser from seeing the bare Next.js placeholder page. Bundle (`/embed/*`), API (`/api/*`), and Socket.IO (`/socket.io/*`) paths are explicitly NOT matched and continue to serve normally. If you ever change this, make sure the rule is still root-only — broadening to `:path*` would break every API call.
 
+### Support-socket `connect()` MUST guard on the whole socket, not just `.connected`
+
+In `src/embed/useSupportChat.ts`, `connect()` bails with `if (socketRef.current) return` — meaning a socket exists in any state (connected, connecting, or reconnecting). The earlier guard `if (socketRef.current?.connected) return` let callers spawn duplicate `io()` sockets whenever the current one wasn't yet fully connected; combined with `ChatWidget`'s effect re-running every render (it depended on the whole `support` object — a fresh reference each render), each `connect_error → setError → render → effect → connect()` cycle created another orphaned socket. The browser eventually rejected them all with `Insufficient resources`, leaving the input/send button permanently disabled — most visibly "after the tab had been idle a while" because any disconnect kicked off the storm. Never weaken the guard; let Socket.IO's own reconnection (`reconnection: true`, `reconnectionAttempts: Infinity`) handle drops on the single socket instance. The matching ChatWidget effect destructures `support.connect`/`support.disconnect` (stable `useCallback`s) so the effect only runs on real `isOpen`/`mode` changes, not on every render.
+
+### Visibility-change reconnect + `io server disconnect` recovery
+
+Two paths the default Socket.IO client doesn't recover from cleanly:
+
+1. **Heavily-backgrounded tabs**: browsers throttle background timers; on refocus the reconnection backoff can leave the input disabled for several seconds. `useSupportChat` adds a `document.addEventListener("visibilitychange", …)` that calls `socketRef.current.connect()` immediately when the tab becomes visible again, so the reconnect doesn't wait out the backoff.
+2. **`io server disconnect` reason**: Socket.IO will NOT auto-reconnect when the disconnect reason is `io server disconnect` (server-initiated drop). The `disconnect` handler now `sock.connect()`s manually for that reason.
+
+If you ever simplify the `disconnect` handler back to `setIsConnected(false)`-only, you reintroduce both bugs.
+
+### Atlas Vector Search `filter` requires the field be indexed as `type: "filter"`
+
+The `$vectorSearch` stage at `src/app/api/chat/route.ts` filters on `{ status: ACTIVE_STATUS }`. For that filter to actually narrow results, the **Atlas vector index** must include `status` as a `type: "filter"` field — not just the vector field. The index creator script (`scripts/createVectorIndex.js`) includes it; the prod cluster's index was manually created via the Atlas UI without the filter field at one point and silently returned **zero** results for every search (the AI then hallucinated property names from its training, which looked like a totally different bug). If a new cluster is provisioned, run `npm run atlas:create-index` against it — don't hand-create the index in the UI.
+
+### Gemini embedding-model access is per-Google-project, separate from text generation
+
+A Gemini API key valid for `gemini-2.0-flash` (text generation) can still return `403 PERMISSION_DENIED` from `gemini-embedding-001` — embedding access is granted at the Google Cloud project level and isn't automatic on every key. Symptom: the chat replies in text but vector search returns nothing → no property cards. Test a new key with a quick `curl -X POST .../gemini-embedding-001:embedContent?key=…` before deploying; if it 403s, create the key inside a project that already has embedding access (or contact Google support).
+
+### Sister page `admin.site/src/app/dashboard/support-chat/page.jsx`
+
+The admin reply console connects to the same `/support` namespace via its own socket. Two patterns mirror what's in `useSupportChat`:
+
+1. On `connect` (initial AND every reconnect), if a conversation is open (`activeIdRef.current`), the admin re-emits `support:fetch-history` + `support:assign`. The server's `handleAssign` short-circuits to a silent `socket.join(room)` when the same admin is still assigned, so re-emitting is a no-op room-rejoin. Without this, a reconnect leaves the fresh socket only in `ADMINS_ROOM` — live messages for the open thread silently stop until the admin clicks away and back.
+2. The same `visibilitychange` reconnect listener.
+
+Changes to socket plumbing here (new server events, namespace rename, etc.) must be mirrored on the admin side. The two pages don't share code — keep them in lockstep manually.
+
 ## Memory anchors
 
 When making changes here, remember:
