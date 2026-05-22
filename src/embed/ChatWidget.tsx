@@ -914,14 +914,20 @@ export const ChatWidget: React.FC = () => {
     if (!loggedIn && mode === "support") setMode("ai");
   }, [isOpen, mode]);
 
-  // Connect/disconnect the support socket only when Support tab is active and panel is open.
+  // Connect/disconnect the support socket only when the Support tab is active
+  // and the panel is open. Depend on the STABLE connect/disconnect callbacks —
+  // not the whole `support` object, which is a fresh reference on every render.
+  // Using `support` here re-ran the effect each render; paired with the old
+  // connect() guard that spawned a socket whenever one wasn't fully connected,
+  // it stormed the browser with WebSockets ("Insufficient resources").
+  const { connect: connectSupport, disconnect: disconnectSupport } = support;
   useEffect(() => {
     if (isOpen && mode === "support") {
-      support.connect();
+      connectSupport();
     } else {
-      support.disconnect();
+      disconnectSupport();
     }
-  }, [isOpen, mode, support]);
+  }, [isOpen, mode, connectSupport, disconnectSupport]);
 
   // Browser-back closes the panel on mobile + tablet only. Pushes a sentinel
   // history entry when the panel opens; popping it (via the system back gesture

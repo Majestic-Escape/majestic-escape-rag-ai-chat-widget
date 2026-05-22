@@ -69,9 +69,16 @@ export function useSupportChat(): UseSupportChat {
   const conversationIdRef = useRef<string | null>(null);
   const typingActiveRef = useRef(false);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const visHandlerRef = useRef<(() => void) | null>(null);
 
   const connect = useCallback(() => {
-    if (socketRef.current?.connected) return;
+    // A socket already exists (connected, connecting, OR reconnecting). Never
+    // create a second one — Socket.IO's own reconnection handles every drop.
+    // The old guard only checked `.connected`, so a still-connecting socket
+    // let callers spawn duplicates; combined with the connect/effect render
+    // loop that storms the browser with WebSockets until it rejects them all
+    // with "Insufficient resources" and the input stays disabled forever.
+    if (socketRef.current) return;
     setError(null);
 
     const token = getAuthToken();
@@ -81,15 +88,25 @@ export function useSupportChat(): UseSupportChat {
       auth: { token, guestSessionId },
       transports: ["websocket", "polling"],
       autoConnect: true,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
     });
     socketRef.current = sock;
 
     sock.on("connect", () => {
       setIsConnected(true);
+      setError(null);
       sock.emit("support:start", { guestSessionId });
     });
 
-    sock.on("disconnect", () => setIsConnected(false));
+    sock.on("disconnect", (reason) => {
+      setIsConnected(false);
+      // "io server disconnect" is the one drop Socket.IO will NOT auto-
+      // reconnect from — reconnect manually so the input never stays stuck.
+      if (reason === "io server disconnect") sock.connect();
+    });
 
     sock.on("connect_error", (err) => {
       console.error("[support] connect_error", err);
@@ -189,9 +206,29 @@ export function useSupportChat(): UseSupportChat {
         if (payload.from === "admin") setPeerTyping(!!payload.isTyping);
       }
     );
+
+    // A backgrounded tab gets its socket throttled and eventually dropped by
+    // the server's ping timeout. The moment the user returns, force an
+    // immediate reconnect rather than waiting out the backoff — otherwise the
+    // input sits disabled for several seconds (or longer) after every idle gap.
+    const onVisible = () => {
+      if (
+        document.visibilityState === "visible" &&
+        socketRef.current &&
+        !socketRef.current.connected
+      ) {
+        socketRef.current.connect();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    visHandlerRef.current = onVisible;
   }, []);
 
   const disconnect = useCallback(() => {
+    if (visHandlerRef.current) {
+      document.removeEventListener("visibilitychange", visHandlerRef.current);
+      visHandlerRef.current = null;
+    }
     socketRef.current?.disconnect();
     socketRef.current = null;
     conversationIdRef.current = null;
