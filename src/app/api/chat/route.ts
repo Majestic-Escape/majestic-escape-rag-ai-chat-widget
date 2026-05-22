@@ -63,7 +63,7 @@ PROPERTY MENTIONS — IMPORTANT:
 
 LOCATION ACCURACY — STRICT:
 - Only state that a property is "in" or "near" a location if the property's own data (city, state) explicitly supports it. Never infer geographic proximity to match the user's query.
-- If the search returns no properties in the user's requested location, say so honestly: e.g. "I don't currently have listings in Mumbai, but here are stays in Goa and Maharashtra that might interest you."
+- If the search returns no properties in the user's requested location, say so honestly: e.g. "I don't currently have listings in Mumbai, but here are some other stays you might like." Only name a city or state if it actually appears in the property data provided to you this turn — never invent, guess, or infer one.
 - Do NOT claim a Goa property is "near Mumbai" or a Maharashtra property is "near Delhi" — these are factually wrong and mislead guests.
 - If the user asks for stays "near me / nearby / in my area" and you cannot identify a city/area/landmark anywhere in their messages, ask them where they are before recommending anything. Do not fall back on whatever Goa/Maharashtra results the search produced — those would be wrong.`;
 
@@ -101,7 +101,7 @@ interface PropertyResult {
   title: string;
   propertyType: string;
   placeType: string;
-  address: { city: string; state: string };
+  address: { city: string; state: string; district?: string };
   basePrice: number;
   guests: number;
   bedrooms: number;
@@ -338,6 +338,104 @@ function buildContext(properties: PropertyResult[]): string {
     .join("\n\n");
 }
 
+// ── Card selection ─────────────────────────────────────────────────────────
+// Generic words that appear inside many Indian place / district strings and so
+// cannot, on their own, pin a query to one property — e.g. "Pradesh" is shared
+// by Uttar Pradesh and Madhya Pradesh; "Road"/"Nagar"/"Waddo" are filler in
+// district strings like "Dewas Road" or "Bouta Waddo". Excluded from the
+// location vocabulary so only the distinctive token (Dewas, Bouta) counts.
+const GEO_STOPWORDS = new Set([
+  "pradesh", "india", "nagar", "city", "district", "town", "village",
+  "east", "west", "north", "south", "central", "new", "old", "near",
+  "road", "marg", "lane", "block", "sector", "phase", "colony", "society",
+  "states", "state", "waddo", "wado", "extension", "main", "cross",
+]);
+
+// Lowercased alphabetic tokens (≥3 chars, non-generic) of a place string.
+function placeTokens(value: string | undefined | null): string[] {
+  if (!value) return [];
+  return value
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !GEO_STOPWORDS.has(w));
+}
+
+// How close (cosine) a non-location card must score to the top hit to be
+// shown. gemini-embedding-001 puts every property in a ~0.74–0.87 band, so an
+// absolute floor is meaningless; a gap from the leader is what separates a
+// real cluster of matches from the long tail of weak ones.
+const CARD_SCORE_GAP = 0.04;
+const MAX_CARDS = 8;
+
+// The locality-level tokens of a property — city + district. District holds
+// the neighbourhood / village / beach-area string (e.g. "Colva", "Kutch",
+// "Cavellosim"), so a guest searching that locality still matches.
+function localityTokens(p: PropertyResult): string[] {
+  return [
+    ...placeTokens(p.address?.city),
+    ...placeTokens(p.address?.district),
+  ];
+}
+
+// Choose which properties become cards (and the LLM's grounding set).
+//
+// If the query names a locality (city / district / village) or state we
+// actually serve, show ONLY properties in that place — a "stays in Lucknow"
+// query must never surface a Goa villa just because its embedding is
+// semantically near. Otherwise (amenity / vibe / unserved-place queries) fall
+// back to a relative-score gate so one strong match isn't buried under a tail
+// of weak ones.
+//
+// Generic — knows no place by name. The vocabulary is built live from whatever
+// properties exist, so it scales unchanged as the catalogue grows (e.g. four
+// future properties all in "Vasco" → a "stays in Vasco" query returns exactly
+// those four, and nothing from the rest of Goa).
+function selectCards(query: string, ranked: PropertyResult[]): PropertyResult[] {
+  if (ranked.length === 0) return [];
+
+  // Two-tier place vocabulary, derived live from the candidate set:
+  //  • locality = city + district tokens (the specific level)
+  //  • state    = state tokens (the broad level)
+  const localityVocab = new Set<string>();
+  const stateVocab = new Set<string>();
+  for (const p of ranked) {
+    for (const t of placeTokens(p.address?.state)) stateVocab.add(t);
+  }
+  for (const p of ranked) {
+    for (const t of localityTokens(p)) localityVocab.add(t);
+  }
+  // A token naming both a locality and a state (e.g. a property whose city
+  // field is literally "Goa") is treated as the state — so "stays in Goa"
+  // matches the whole region, not the lone property with that city value.
+  for (const t of stateVocab) localityVocab.delete(t);
+
+  const queryTokens = placeTokens(query);
+  const namedLocalities = new Set(queryTokens.filter((t) => localityVocab.has(t)));
+  const namedStates = new Set(queryTokens.filter((t) => stateVocab.has(t)));
+
+  // Locality precedence: "villas in Vasco, Goa" means Vasco specifically — not
+  // the whole state. Only fall back to a state match when no locality is named.
+  if (namedLocalities.size > 0) {
+    const matched = ranked.filter((p) =>
+      localityTokens(p).some((t) => namedLocalities.has(t))
+    );
+    return matched.slice(0, MAX_CARDS);
+  }
+  if (namedStates.size > 0) {
+    const matched = ranked.filter((p) =>
+      placeTokens(p.address?.state).some((t) => namedStates.has(t))
+    );
+    return matched.slice(0, MAX_CARDS);
+  }
+
+  // No served place named — amenity / vibe / unserved-location query.
+  const topScore = ranked[0].score ?? 0;
+  return ranked
+    .filter((p) => (p.score ?? 0) >= topScore - CARD_SCORE_GAP)
+    .slice(0, MAX_CARDS);
+}
+
 export async function POST(req: NextRequest) {
   try {
     // ── Identity + rate limit (cheap rejection before body parse) ──
@@ -513,22 +611,21 @@ export async function POST(req: NextRequest) {
               if (blocked.has(String(c._id))) c.partiallyBooked = true;
             }
           }
-          // Top 8: prefer available, then by score. The model gets all 8 in
-          // its grounding context (so it has options to choose from), but the
-          // user-facing carousel only shows the confident matches (>0.65) so
-          // borderline-similarity stays don't pollute the recommendations.
-          const sorted = candidates
+          // Rank: available first, then by similarity score.
+          const ranked = candidates
             .slice()
             .sort((a, b) => {
               if (!!a.partiallyBooked === !!b.partiallyBooked) {
                 return (b.score ?? 0) - (a.score ?? 0);
               }
               return a.partiallyBooked ? 1 : -1;
-            })
-            .slice(0, 8);
-          const context = buildContext(sorted);
+            });
+          // Cards and the LLM's grounding context use the SAME set, so the
+          // reply text can never name a property the user has no card for.
+          // selectCards applies the location filter — see its doc comment.
+          cardProperties = selectCards(cleanMessage, ranked);
+          const context = buildContext(cardProperties);
           contextBlock = `\n\nRELEVANT PROPERTIES FROM OUR DATABASE:\n${context}\n\nWhen recommending properties, only mention those listed above. Use the property's title (name) only — do NOT echo the ID, URL, or Link field in your text response. The user sees clickable cards below.`;
-          cardProperties = sorted.filter((p) => (p.score ?? 1) > 0.65);
         }
       } catch (ragErr) {
         console.warn("[chat/route] RAG unavailable, falling back:", (ragErr as Error).message);
