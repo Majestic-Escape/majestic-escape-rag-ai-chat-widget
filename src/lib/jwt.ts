@@ -71,7 +71,18 @@ export function isAdminPayload(payload: AppJwtPayload | null): boolean {
 // few times per quarter at most), so a 5-minute TTL is a comfortable trade-off
 // between DB load and how quickly a freshly-banned admin loses access.
 const ADMIN_CACHE_TTL_MS = 5 * 60 * 1000;
+// Every distinct userId that ever authenticates gets an entry (not just admins), so
+// without cleanup this Map grows for the lifetime of the process. Cap + periodic
+// sweep keep it bounded — see src/lib/rateLimit.ts for the same pattern.
+const ADMIN_CACHE_MAX_SIZE = 5000;
 const adminCache = new Map<string, { isAdmin: boolean; expires: number }>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of adminCache.entries()) {
+    if (entry.expires <= now) adminCache.delete(key);
+  }
+}, 60_000).unref?.();
 
 async function isAdminInDb(userId: string): Promise<boolean> {
   if (!userId) return false;
@@ -96,6 +107,9 @@ async function isAdminInDb(userId: string): Promise<boolean> {
     );
     const isAdmin = !!found;
     adminCache.set(userId, { isAdmin, expires: Date.now() + ADMIN_CACHE_TTL_MS });
+    // Hard ceiling in case a traffic burst outpaces the 60s sweep: the cache is a
+    // pure optimization, so clearing it just costs one extra findOne per user.
+    if (adminCache.size > ADMIN_CACHE_MAX_SIZE) adminCache.clear();
     return isAdmin;
   } catch (err) {
     // Network blip / DB outage: deny admin rather than fail-open. The user
