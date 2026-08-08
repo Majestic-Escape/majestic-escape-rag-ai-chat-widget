@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import clientPromise from "@/lib/mongodb";
 import { verifyToken } from "@/lib/jwt";
+import { isAiEnabled } from "@/lib/aiToggle";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,6 +11,14 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
 export async function GET(req: NextRequest) {
+  // Gated alongside /api/chat so the AI surface closes completely rather than
+  // half-open. Reading history costs no AI tokens, but leaving it live while
+  // the assistant is off would still serve prior AI transcripts into a widget
+  // that is not meant to show an AI tab at all.
+  if (!(await isAiEnabled())) {
+    return NextResponse.json({ error: "ai_disabled" }, { status: 403 });
+  }
+
   const url = new URL(req.url);
   const limitRaw = Number(url.searchParams.get("limit") ?? DEFAULT_LIMIT);
   const limit = Number.isFinite(limitRaw)

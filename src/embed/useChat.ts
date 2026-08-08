@@ -23,6 +23,9 @@ export function useChat() {
   const [supportMessages, setSupportMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when /api/chat answers 403 ai_disabled — the ops kill-switch was flipped
+  // while this page was open. ChatWidget watches this and hides the AI tab.
+  const [aiDisabled, setAiDisabled] = useState(false);
   const aiHistoryLoadedRef = useRef(false);
 
   const loadAiHistoryOnce = useCallback(async () => {
@@ -138,6 +141,25 @@ export function useChat() {
           }),
         });
 
+        // Ops flipped the kill-switch while this page was open. /embed/widget.js
+        // is cached for up to 5 minutes, so a tab loaded before the flip can
+        // still be showing the AI tab. Detect that specific 403 and tell
+        // ChatWidget to hide the tab, rather than leaving the user on a generic
+        // "trouble connecting" error that invites them to retry forever.
+        if (res.status === 403) {
+          let disabled = false;
+          try {
+            disabled = (await res.clone().json())?.error === "ai_disabled";
+          } catch {
+            /* non-JSON 403 → fall through to the generic error path below */
+          }
+          if (disabled) {
+            setAiDisabled(true);
+            setActive((prev) => prev.filter((m) => m.id !== modelMsgId));
+            return; // `finally` still clears isLoading
+          }
+        }
+
         if (!res.ok || !res.body) throw new Error("Network error");
 
         const reader = res.body.getReader();
@@ -199,6 +221,7 @@ export function useChat() {
     supportMessages,
     isLoading,
     error,
+    aiDisabled,
     sendMessage,
     initChat,
     resetAiMessages,
