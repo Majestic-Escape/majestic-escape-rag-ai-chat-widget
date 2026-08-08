@@ -605,6 +605,8 @@ const MENU_SECTIONS: MenuSection[] = [
 interface MainMenuDrawerProps {
   isOpen: boolean;
   isLoggedIn: boolean;
+  /** False when the ops kill-switch is off — hides every AI-routing tile. */
+  aiAvailable: boolean;
   mode: ChatMode;
   onClose: () => void;
   onPrompt: (text: string) => void;
@@ -616,6 +618,7 @@ interface MainMenuDrawerProps {
 const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
   isOpen,
   isLoggedIn,
+  aiAvailable,
   mode,
   onClose,
   onPrompt,
@@ -669,11 +672,19 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
     }
   };
 
-  // Visible sections after applying the logged-in filter — and we drop any
-  // section that has no tiles left for this user.
+  // Visible sections after applying the logged-in and AI-availability filters —
+  // and we drop any section that has no tiles left for this user.
   const visibleSections = MENU_SECTIONS.map((s) => ({
     ...s,
-    tiles: s.tiles.filter((t) => !t.requiresLogin || isLoggedIn),
+    tiles: s.tiles.filter(
+      (t) =>
+        (!t.requiresLogin || isLoggedIn) &&
+        // Every "prompt" tile sends its text straight to the AI. With the
+        // assistant disabled those would switch the user to a tab that is no
+        // longer rendered and then hit a 403, so drop them rather than leave a
+        // dead end in the menu.
+        (t.action.kind !== "prompt" || aiAvailable)
+    ),
   })).filter((s) => s.tiles.length > 0);
 
   return (
@@ -846,6 +857,27 @@ function shouldHideOnPath(pathname: string): boolean {
 // would make the launcher visually jump as the user navigates.
 const LAUNCHER_OFFSET = "bottom-28 md:bottom-6";
 
+// Stacking against the HOST page, not against ourselves.
+//
+// This bundle is dropped onto pages we don't control, and the host element
+// (<majestic-chat-widget>) is display:inline / z-index:auto, so it creates no
+// stacking context of its own — our fixed children compete directly with the
+// host page's chrome. user.website's header is `fixed ... z-[1002]`, which beat
+// the panel's effective z-50 and painted over its top ~38px: on <lg the panel
+// sits at y=8 under a 46px-tall header, so the avatar and the minimise/close
+// controls were sliced off. The backdrop lost the same fight, which is why the
+// header stayed bright white while the rest of the page dimmed.
+//
+// A floating assistant belongs above host chrome, so we claim the same near-max
+// band third-party widgets conventionally use (Intercom sits at 2147483000).
+// Keep the backdrop exactly one below the panel: their relative order is what
+// makes click-outside-to-close work.
+//
+// These must stay literal strings — Tailwind's content scanner only emits
+// utilities it can find verbatim in src/embed/**.
+const Z_BACKDROP = "z-[2147483000]";
+const Z_PANEL_STACK = "z-[2147483001]";
+
 export const ChatWidget: React.FC = () => {
   const pathname = useCurrentPathname();
   const hidden = shouldHideOnPath(pathname);
@@ -856,10 +888,16 @@ export const ChatWidget: React.FC = () => {
   const [menuOpen, setMenuOpen] = useState(false);
   // Re-checked when the panel opens; covers logout-mid-session.
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  // Ops kill-switch, read from /api/chat/config when the panel opens.
+  // `null` = not yet known. Treated as available until proven otherwise so a
+  // slow or failed config call doesn't hide a working assistant — the server
+  // still refuses to spend either way, and a 403 flips this to false below.
+  const [aiEnabled, setAiEnabled] = useState<boolean | null>(null);
   const {
     aiMessages,
     isLoading: aiLoading,
     error: aiError,
+    aiDisabled,
     sendMessage: sendAi,
     initChat: initAi,
     resetAiMessages,
@@ -868,6 +906,23 @@ export const ChatWidget: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
+
+  // Which tabs the user may actually see.
+  //   aiAvailable      — the assistant is on (or we haven't heard otherwise yet)
+  //   supportAvailable — Support has always required a logged-in identity
+  //   needsLoginForSupport — AI off AND anonymous: the one combination that
+  //     leaves nothing usable, so it gets an explicit sign-in call to action
+  //     instead of an empty panel. It reveals nothing about the assistant.
+  const aiAvailable = aiEnabled !== false;
+  const supportAvailable = isLoggedIn;
+  const needsLoginForSupport = !aiAvailable && !supportAvailable;
+  // Render the segmented control whenever at least one tab exists. This
+  // deliberately preserves the original behaviour for every AI-on case: an
+  // anonymous visitor has always seen the bar with a lone "AI Assistant"
+  // button. Only the AI-off-and-anonymous case drops it entirely, because then
+  // there is genuinely nothing to switch between and the sign-in prompt covers
+  // the panel instead.
+  const showModeTabs = aiAvailable || supportAvailable;
 
   // Show only the active tab's history; AI from local hook, Support from Socket.IO hook.
   const messages = mode === "ai" ? aiMessages : support.messages;
@@ -891,8 +946,45 @@ export const ChatWidget: React.FC = () => {
   // intrusive when a user just taps the chat icon. Users tap the input when
   // they're ready to type.
   useEffect(() => {
-    if (isOpen && mode === "ai") initAi("ai");
-  }, [isOpen, mode, initAi]);
+    if (isOpen && mode === "ai" && aiAvailable) initAi("ai");
+  }, [isOpen, mode, aiAvailable, initAi]);
+
+  // Read the ops kill-switch each time the panel opens. Cheap, uncached, and
+  // only on open — no polling loop, so a disabled widget costs zero ongoing
+  // requests.
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${getBackendUrl()}/api/chat/config`, {
+          cache: "no-store",
+        });
+        if (!res.ok) return; // leave the previous/default state alone
+        const data = await res.json();
+        if (!cancelled) setAiEnabled(data?.aiEnabled !== false);
+      } catch {
+        // Unreachable config → keep showing the assistant. The server is the
+        // real guard: if it is genuinely off, the first send returns 403 and
+        // `aiDisabled` below corrects the UI.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
+  // A 403 from /api/chat means ops flipped the switch mid-session (the bundle
+  // is cached up to 5 min, so an already-open tab can lag the config). Correct
+  // the UI immediately rather than waiting for a reload.
+  useEffect(() => {
+    if (aiDisabled) setAiEnabled(false);
+  }, [aiDisabled]);
+
+  // Never leave the user parked on a tab that is no longer rendered.
+  useEffect(() => {
+    if (!aiAvailable && mode === "ai") setMode("support");
+  }, [aiAvailable, mode]);
 
   // Re-detect login when the panel opens. Anonymous users see only AI Assistant.
   useEffect(() => {
@@ -910,9 +1002,12 @@ export const ChatWidget: React.FC = () => {
     }
     const loggedIn = !!token;
     setIsLoggedIn(loggedIn);
-    // If user landed on Support tab but isn't logged in, send them back to AI.
-    if (!loggedIn && mode === "support") setMode("ai");
-  }, [isOpen, mode]);
+    // If user landed on Support tab but isn't logged in, send them back to AI —
+    // but only when the AI tab actually exists. With the kill-switch off there
+    // is no AI tab to fall back to, and bouncing them there would strand them
+    // on a hidden tab. That case renders the sign-in prompt instead.
+    if (!loggedIn && mode === "support" && aiAvailable) setMode("ai");
+  }, [isOpen, mode, aiAvailable]);
 
   // Connect/disconnect the support socket only when the Support tab is active
   // and the panel is open. Depend on the STABLE connect/disconnect callbacks —
@@ -922,12 +1017,17 @@ export const ChatWidget: React.FC = () => {
   // it stormed the browser with WebSockets ("Insufficient resources").
   const { connect: connectSupport, disconnect: disconnectSupport } = support;
   useEffect(() => {
-    if (isOpen && mode === "support") {
+    // `supportAvailable` matters now that the kill-switch can leave an
+    // anonymous user sitting on the Support tab. Previously that was
+    // impossible (they were always bounced to AI), so an unauthenticated
+    // socket connect could never be attempted. Without this guard the widget
+    // would retry a doomed handshake for every logged-out visitor.
+    if (isOpen && mode === "support" && supportAvailable) {
       connectSupport();
     } else {
       disconnectSupport();
     }
-  }, [isOpen, mode, connectSupport, disconnectSupport]);
+  }, [isOpen, mode, supportAvailable, connectSupport, disconnectSupport]);
 
   // Browser-back closes the panel on mobile + tablet only. Pushes a sentinel
   // history entry when the panel opens; popping it (via the system back gesture
@@ -1129,12 +1229,12 @@ export const ChatWidget: React.FC = () => {
       {isOpen && (
         <div
           onClick={() => setIsOpen(false)}
-          className="fixed inset-0 z-40 touch-none bg-black/50 backdrop-blur-sm lg:bg-transparent lg:backdrop-blur-none animate-fade-in-up"
+          className={`fixed inset-0 ${Z_BACKDROP} touch-none bg-black/50 backdrop-blur-sm lg:bg-transparent lg:backdrop-blur-none animate-fade-in-up`}
           aria-hidden="true"
         />
       )}
 
-      <div className={`fixed ${LAUNCHER_OFFSET} right-4 md:right-6 z-50 flex flex-col items-end font-poppins`}>
+      <div className={`fixed ${LAUNCHER_OFFSET} right-4 md:right-6 ${Z_PANEL_STACK} flex flex-col items-end font-poppins`}>
       {/* Chat Window — kept at its open-target position in both states so the
           transition only animates transform + opacity (which CSS can interpolate
           smoothly). Toggling between `absolute bottom-0 right-0` and `fixed
@@ -1162,9 +1262,14 @@ export const ChatWidget: React.FC = () => {
         <MainMenuDrawer
           isOpen={menuOpen}
           isLoggedIn={isLoggedIn}
+          aiAvailable={aiAvailable}
           mode={mode}
           onClose={() => setMenuOpen(false)}
           onPrompt={(text) => {
+            // Defence in depth: the drawer already hides prompt tiles when the
+            // assistant is off, so this should be unreachable. Belt-and-braces
+            // because the alternative is silently switching to a hidden tab.
+            if (!aiAvailable) return;
             if (mode !== "ai") setMode("ai");
             sendAi(text, "ai");
           }}
@@ -1204,14 +1309,21 @@ export const ChatWidget: React.FC = () => {
                 <p className="text-stone text-[11px] flex items-center gap-1 mt-0.5">
                   <span
                     className={`w-1.5 h-1.5 rounded-full ${
-                      mode === "support" && !support.isConnected
+                      needsLoginForSupport
+                        ? "bg-gray-400"
+                        : mode === "support" && !support.isConnected
                         ? "bg-amber-500"
                         : mode === "support" && support.status === "resolved"
                         ? "bg-gray-400"
                         : "bg-green-500"
                     }`}
                   />
-                  {mode === "ai"
+                  {/* Without the first branch this reads "Connecting…" forever
+                      for a signed-out visitor, because we deliberately never
+                      open a socket for them. */}
+                  {needsLoginForSupport
+                    ? "Sign in to start"
+                    : mode === "ai"
                     ? "Ready to assist"
                     : !support.isConnected
                     ? "Connecting…"
@@ -1242,32 +1354,40 @@ export const ChatWidget: React.FC = () => {
             </div>
           </div>
 
-          {/* Mode Toggle — Support tab is hidden for anonymous users so we
-              always have an authenticated identity tied to support requests. */}
-          <div className="flex bg-gray-100 p-1 rounded-lg mb-3">
-            <button
-              onClick={() => setMode("ai")}
-              className={`flex-1 flex items-center justify-center gap-2 py-1.5 text-xs font-medium rounded-md transition-all ${
-                mode === "ai"
-                  ? "bg-white text-primaryGreen shadow-sm"
-                  : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5" /> AI Assistant
-            </button>
-            {isLoggedIn && (
-              <button
-                onClick={() => setMode("support")}
-                className={`flex-1 flex items-center justify-center gap-2 py-1.5 text-xs font-medium rounded-md transition-all ${
-                  mode === "support"
-                    ? "bg-white text-primaryGreen shadow-sm"
-                    : "text-gray-500 hover:text-gray-700"
-                }`}
-              >
-                <Headset className="w-3.5 h-3.5" /> Support
-              </button>
-            )}
-          </div>
+          {/* Mode Toggle — Support is hidden for anonymous users so we always
+              have an authenticated identity tied to support requests, and the
+              AI tab disappears entirely when ops disable the assistant. When
+              only one of the two is available there's nothing to toggle, so the
+              control is dropped rather than rendered with a single option. */}
+          {showModeTabs && (
+            <div className="flex bg-gray-100 p-1 rounded-lg mb-3">
+              {aiAvailable && (
+                <button
+                  onClick={() => setMode("ai")}
+                  className={`flex-1 flex items-center justify-center gap-2 py-1.5 text-xs font-medium rounded-md transition-all ${
+                    mode === "ai"
+                      ? "bg-white text-primaryGreen shadow-sm"
+                      : "text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" /> AI Assistant
+                </button>
+              )}
+              {supportAvailable && (
+                <button
+                  onClick={() => setMode("support")}
+                  className={`flex-1 flex items-center justify-center gap-2 py-1.5 text-xs font-medium rounded-md transition-all ${
+                    mode === "support"
+                      ? "bg-white text-primaryGreen shadow-sm"
+                      : "text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  <Headset className="w-3.5 h-3.5" /> Support
+                </button>
+              )}
+            </div>
+          )}
+          {!showModeTabs && <div className="mb-3" />}
         </div>
 
         {/* Messages — `overscroll-contain` stops the scroll chain from
@@ -1295,7 +1415,33 @@ export const ChatWidget: React.FC = () => {
             </div>
           )}
 
-          {!hasUserMessage && mode === "support" && (
+          {/* AI off AND anonymous — the only state with no usable tab. Give a
+              clear way forward instead of an empty panel. Deliberately says
+              nothing about the assistant being disabled. */}
+          {needsLoginForSupport && (
+            <div className="flex flex-col items-center text-center gap-3 py-8 px-4 animate-fade-in-up">
+              <div className="w-12 h-12 rounded-full bg-primaryGreen/10 text-primaryGreen flex items-center justify-center">
+                <Headset className="w-6 h-6" />
+              </div>
+              <div>
+                <p className="text-[15px] font-semibold text-graphite">
+                  Chat with our team
+                </p>
+                <p className="text-[13px] text-stone mt-1 max-w-[15rem]">
+                  Sign in and our support team will help you with bookings,
+                  stays and anything else.
+                </p>
+              </div>
+              <a
+                href="/login"
+                className="inline-flex items-center justify-center bg-primaryGreen hover:bg-brightGreen text-white text-[13px] font-medium rounded-full px-5 py-2.5 transition-colors"
+              >
+                Sign in
+              </a>
+            </div>
+          )}
+
+          {!hasUserMessage && mode === "support" && !needsLoginForSupport && (
             <div className="flex flex-col gap-2 mb-2 animate-fade-in-up">
               <p className="text-xs font-medium text-gray-500 ml-1">How can we help you?</p>
               <div className="flex flex-col gap-2">
@@ -1343,9 +1489,12 @@ export const ChatWidget: React.FC = () => {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input area — three states for support: open, awaiting-rating, closed */}
+        {/* Input area — three states for support: open, awaiting-rating, closed.
+            Suppressed entirely when the visitor has to sign in first: there is
+            no conversation to type into, and a dead input is worse than none. */}
         <div className="p-4 bg-white border-t border-gray-100 shrink-0">
-          {mode === "support" && support.awaitingRating ? (
+          {needsLoginForSupport ? null : mode === "support" &&
+            support.awaitingRating ? (
             <RatingPrompt
               onSubmit={(stars, comment) => support.submitRating(stars, comment)}
               onSkip={() => {
@@ -1455,7 +1604,12 @@ export const ChatWidget: React.FC = () => {
             active:scale-95
             focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-primaryGreen/40
           "
-          aria-label="Open Majestic AI chat"
+          aria-label={
+            // Mode-aware: with the assistant switched off there is no AI chat
+            // to open, and announcing one to a screen-reader user would promise
+            // a tab that isn't rendered.
+            aiAvailable ? "Open Majestic AI chat" : "Open Majestic Support chat"
+          }
         >
           {/* Robot mascot — served from the widget origin so it survives
               build:embed (which only wipes public/embed). Idle float lives on

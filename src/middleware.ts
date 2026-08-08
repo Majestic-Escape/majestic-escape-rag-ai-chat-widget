@@ -67,5 +67,15 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/chat/:path*", "/api/chat"],
+  // /api/admin/* is included because admin.site (a different origin — :3001 in
+  // dev, admin.majesticescape.in in prod) calls the AI kill-switch endpoint with
+  // fetch. The other admin routes predate that and were only ever driven
+  // server-side or by curl, so they never needed a preflight. These endpoints
+  // stay protected the same way they always were: verifyToken + resolveIsAdmin
+  // inside each handler. CORS opens the door; it does not authorise anything.
+  matcher: [
+    "/api/chat/:path*",
+    "/api/chat",
+    "/api/admin/:path*",
+  ],
 };

@@ -119,6 +119,38 @@ The chatbot only embeds and surfaces properties whose `status === "active"`, mir
 
 If you ever broaden visibility (e.g. include `pending` or `archived` properties), update all three in the same change. Touching one creates a silent inconsistency that's hard to spot in tests.
 
+### The AI kill-switch gate must stay the FIRST statement in `POST /api/chat`
+
+`src/lib/aiToggle.ts` backs an ops switch (admin.site → Settings) that turns the
+AI assistant off when the business is closed, so Gemini/Groq/xAI stop costing
+money. Three things make it real rather than cosmetic:
+
+1. **`src/app/api/chat/route.ts` checks it before anything else** — before the
+   rate limiter, `embedQuery`, `$vectorSearch` and every provider hop. The widget
+   bundle is loaded cross-origin and anyone can POST directly, so this check is
+   the only actual spend guarantee. Do not move it below the rate limiter "for
+   consistency": `isAiEnabled()` is cache-backed and cheaper than the limiter's
+   own bookkeeping. `src/app/api/chat/history/route.ts` carries the same gate.
+2. **The fail-closed contract has three rules** — missing settings doc → enabled
+   (backward compatible); read error → disabled; **expired cache + failed re-read
+   → disabled, never re-serving a stale `true`**. Rules 1 and 2 look similar
+   enough that a refactor could merge them and silently leave billing on during a
+   Mongo outage. `npm run verify:ai-toggle` asserts all three — run it after any
+   edit to that file.
+3. **Client-side is UX only.** `ChatWidget` hides the AI tab, drops the segmented
+   control when only one tab remains, filters AI-routing tiles out of the menu
+   drawer, and — because Support requires login — shows a sign-in CTA for
+   anonymous visitors rather than an empty panel. None of it is trusted; a forged
+   config response still gets a 403.
+
+Two coupled details worth remembering: the anonymous-user guard
+(`if (!loggedIn && mode === "support") setMode("ai")`) is conditional on the AI
+tab existing, otherwise it strands users on a hidden tab; and the support socket
+only connects when the user is actually logged in, otherwise every logged-out
+visitor would retry a doomed handshake. `/embed/widget.js` is cached 5 minutes in
+prod, so an already-open tab can lag a flip — `useChat` watches for the
+`ai_disabled` 403 and corrects the UI immediately.
+
 ### Auto-ack must NEVER use AI
 
 The auto-ack on first user message is a **static template** chosen between `isFirstAck`'s two strings. It must not be:
@@ -148,6 +180,26 @@ The auto-ack guard uses `chats.updateOne` with a filter that includes `$nor: [{ 
 ### Don't return `list[0]` on CORS rejection
 
 `src/middleware.ts` returns `null` (omits the ACAO header) when an origin is rejected. The browser then blocks the response cleanly. Earlier code returned `list[0]` which sent a wrong-but-valid header that's silently misleading. Don't reintroduce that pattern.
+
+### The widget must out-stack the host page's chrome
+
+`<majestic-chat-widget>` is `display:inline` with `z-index:auto`, so it creates
+**no stacking context** — the panel's `position:fixed` children compete directly
+with whatever the host page puts on screen. The panel stack used to top out at
+`z-50`, and user.website's header is `fixed ... z-[1002]`, so the header painted
+over the panel's top ~38px: on `<lg` the panel starts at y=8 under a 46px header,
+which sliced off the avatar and the minimise/close controls. The backdrop lost
+the same fight, so the header stayed bright white while the rest of the page
+dimmed. It affected every viewport (desktop panel starts at y≈28 under a 77px
+header); it was just most obvious on mobile.
+
+`Z_BACKDROP` / `Z_PANEL_STACK` in `ChatWidget.tsx` now claim the near-max band
+third-party widgets conventionally use (Intercom sits at 2147483000). Two rules:
+keep the backdrop exactly one below the panel (their order is what makes
+click-outside-to-close work), and keep both as **literal strings** — Tailwind
+only emits arbitrary utilities it can find verbatim in `src/embed/**`. Don't
+"fix" this by offsetting the panel below the header instead; the host header
+height varies per site and per route, and the panel is meant to overlay it.
 
 ### Mobile keyboard + scroll lock is interlocked — don't simplify
 

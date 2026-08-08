@@ -11,6 +11,7 @@ import {
   SAFETY_DIRECTIVE,
 } from "@/lib/moderation";
 import { checkRateLimit, ipFromHeaders } from "@/lib/rateLimit";
+import { isAiEnabled } from "@/lib/aiToggle";
 import { extractDateRange } from "@/lib/dateRange";
 import { verifyToken } from "@/lib/jwt";
 
@@ -438,6 +439,24 @@ function selectCards(query: string, ranked: PropertyResult[]): PropertyResult[] 
 
 export async function POST(req: NextRequest) {
   try {
+    // ── Ops kill-switch — MUST stay the first statement in this handler ──
+    // Every path below this line costs money: rate-limiter bookkeeping, the
+    // Gemini embedding call, the Atlas $vectorSearch, and the
+    // Gemini → Groq → xAI cascade. Returning here is what makes the admin
+    // toggle an actual spend control rather than a UI preference.
+    //
+    // The widget also hides its AI tab when disabled, but that is cosmetic —
+    // the bundle is loaded cross-origin and anyone can POST here directly, so
+    // this server-side check is the only real guarantee. Do not move it below
+    // the rate limiter "for consistency": isAiEnabled() is cache-backed and
+    // cheaper than the limiter's own bookkeeping.
+    if (!(await isAiEnabled())) {
+      return new Response(JSON.stringify({ error: "ai_disabled" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     // ── Identity + rate limit (cheap rejection before body parse) ──
     // Prefer JWT identity when present so legitimate logged-in users get a higher ceiling.
     const ip = ipFromHeaders(req.headers);
