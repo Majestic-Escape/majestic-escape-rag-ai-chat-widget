@@ -6,6 +6,7 @@ import {
   Loader2,
   Sparkles,
   Headset,
+  MessageCircle,
   Search,
   MapPin,
   Calendar,
@@ -888,10 +889,17 @@ export const ChatWidget: React.FC = () => {
   const [menuOpen, setMenuOpen] = useState(false);
   // Re-checked when the panel opens; covers logout-mid-session.
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  // Ops kill-switch, read from /api/chat/config when the panel opens.
-  // `null` = not yet known. Treated as available until proven otherwise so a
-  // slow or failed config call doesn't hide a working assistant — the server
-  // still refuses to spend either way, and a 403 flips this to false below.
+  // Ops kill-switch, read from /api/chat/config. `null` = not yet known.
+  //
+  // This used to default to "available until proven otherwise", which made the
+  // AI tab — greeting, quick prompts and all — flash on screen for the few
+  // hundred ms before the config response landed, even with the switch off.
+  // Reloading and opening the panel immediately reproduced it every time.
+  //
+  // It now fails CLOSED: nothing AI-related renders until the answer is known.
+  // The cost is the mirror case (assistant on, config still in flight, so the
+  // tab appears a moment late) which is strictly the better failure — a missing
+  // tab that arrives is a non-event, a forbidden tab that appears is not.
   const [aiEnabled, setAiEnabled] = useState<boolean | null>(null);
   const {
     aiMessages,
@@ -908,21 +916,29 @@ export const ChatWidget: React.FC = () => {
   const messagesScrollRef = useRef<HTMLDivElement>(null);
 
   // Which tabs the user may actually see.
-  //   aiAvailable      — the assistant is on (or we haven't heard otherwise yet)
+  //   configResolved   — /api/chat/config has answered; until then we know
+  //     nothing and must not guess in the assistant's favour
+  //   aiAvailable      — strictly `=== true`. Anything else (unknown, off,
+  //     failed lookup) hides every AI surface.
   //   supportAvailable — Support has always required a logged-in identity
   //   needsLoginForSupport — AI off AND anonymous: the one combination that
   //     leaves nothing usable, so it gets an explicit sign-in call to action
   //     instead of an empty panel. It reveals nothing about the assistant.
-  const aiAvailable = aiEnabled !== false;
+  //     Deliberately requires configResolved, so the sign-in prompt doesn't
+  //     flash at a logged-out visitor while the assistant is actually on.
+  const configResolved = aiEnabled !== null;
+  const aiAvailable = aiEnabled === true;
   const supportAvailable = isLoggedIn;
-  const needsLoginForSupport = !aiAvailable && !supportAvailable;
+  const needsLoginForSupport = configResolved && !aiAvailable && !supportAvailable;
   // Render the segmented control whenever at least one tab exists. This
   // deliberately preserves the original behaviour for every AI-on case: an
   // anonymous visitor has always seen the bar with a lone "AI Assistant"
   // button. Only the AI-off-and-anonymous case drops it entirely, because then
   // there is genuinely nothing to switch between and the sign-in prompt covers
   // the panel instead.
-  const showModeTabs = aiAvailable || supportAvailable;
+  // Nothing renders in the tab row until the answer is in — otherwise the very
+  // frames this fix exists to remove would still show a lone "AI Assistant".
+  const showModeTabs = configResolved && (aiAvailable || supportAvailable);
 
   // Show only the active tab's history; AI from local hook, Support from Socket.IO hook.
   const messages = mode === "ai" ? aiMessages : support.messages;
@@ -949,30 +965,41 @@ export const ChatWidget: React.FC = () => {
     if (isOpen && mode === "ai" && aiAvailable) initAi("ai");
   }, [isOpen, mode, aiAvailable, initAi]);
 
-  // Read the ops kill-switch each time the panel opens. Cheap, uncached, and
-  // only on open — no polling loop, so a disabled widget costs zero ongoing
-  // requests.
+  // Read the ops kill-switch on MOUNT, not on open.
+  //
+  // Fetching it when the panel opened meant the request and the user's click
+  // raced: reload, tap the launcher immediately, and the panel rendered before
+  // the answer arrived. Starting at mount gives it the whole time between page
+  // load and the first click — normally seconds — so by the time anyone opens
+  // the widget the state is already settled. One request per page load, still
+  // no polling.
   useEffect(() => {
-    if (!isOpen) return;
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch(`${getBackendUrl()}/api/chat/config`, {
           cache: "no-store",
         });
-        if (!res.ok) return; // leave the previous/default state alone
+        if (!res.ok) {
+          // Can't confirm it's on, so treat it as off. Fail closed: a missing
+          // tab is recoverable, a forbidden one is not.
+          if (!cancelled) setAiEnabled(false);
+          return;
+        }
         const data = await res.json();
-        if (!cancelled) setAiEnabled(data?.aiEnabled !== false);
+        if (!cancelled) setAiEnabled(data?.aiEnabled === true);
       } catch {
-        // Unreachable config → keep showing the assistant. The server is the
-        // real guard: if it is genuinely off, the first send returns 403 and
-        // `aiDisabled` below corrects the UI.
+        // Unreachable config → same reasoning: fail closed. The server would
+        // refuse the request anyway, so showing the tab could only mislead.
+        if (!cancelled) setAiEnabled(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [isOpen]);
+    // Mount-only: no `isOpen` dependency, so opening and closing the panel
+    // never re-races this.
+  }, []);
 
   // A 403 from /api/chat means ops flipped the switch mid-session (the bundle
   // is cached up to 5 min, so an already-open tab can lag the config). Correct
@@ -982,9 +1009,12 @@ export const ChatWidget: React.FC = () => {
   }, [aiDisabled]);
 
   // Never leave the user parked on a tab that is no longer rendered.
+  // Waits for `configResolved`: while the answer is still unknown `aiAvailable`
+  // is false, and without this guard we'd flip everyone to Support on mount and
+  // then leave them there even when the assistant turns out to be enabled.
   useEffect(() => {
-    if (!aiAvailable && mode === "ai") setMode("support");
-  }, [aiAvailable, mode]);
+    if (configResolved && !aiAvailable && mode === "ai") setMode("support");
+  }, [configResolved, aiAvailable, mode]);
 
   // Re-detect login when the panel opens. Anonymous users see only AI Assistant.
   useEffect(() => {
@@ -1291,8 +1321,15 @@ export const ChatWidget: React.FC = () => {
         <div className="bg-white border-b border-gray-100 pt-4 px-4 pb-0 flex flex-col shrink-0">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
+              {/* Until the kill-switch answer is in, the header must not brand
+                  itself as the AI assistant — `mode` still defaults to "ai", so
+                  without this the title, sparkle icon and status all rendered
+                  "Majestic AI · Ready to assist" for the few frames before the
+                  config landed, even with the switch off. */}
               <div className="w-8 h-8 rounded-full bg-primaryGreen text-white flex items-center justify-center">
-                {mode === "ai" ? (
+                {!configResolved ? (
+                  <MessageCircle className="w-4 h-4" />
+                ) : mode === "ai" ? (
                   <Sparkles className="w-4 h-4" />
                 ) : (
                   <Headset className="w-4 h-4" />
@@ -1300,7 +1337,9 @@ export const ChatWidget: React.FC = () => {
               </div>
               <div>
                 <h3 className="font-semibold text-graphite text-[15px] leading-tight">
-                  {mode === "ai"
+                  {!configResolved
+                    ? "Majestic Escape"
+                    : mode === "ai"
                     ? "Majestic AI"
                     : support.assignedAdminName && support.status === "open"
                     ? `${support.assignedAdminName} is helping you`
@@ -1309,7 +1348,9 @@ export const ChatWidget: React.FC = () => {
                 <p className="text-stone text-[11px] flex items-center gap-1 mt-0.5">
                   <span
                     className={`w-1.5 h-1.5 rounded-full ${
-                      needsLoginForSupport
+                      !configResolved
+                        ? "bg-gray-400"
+                        : needsLoginForSupport
                         ? "bg-gray-400"
                         : mode === "support" && !support.isConnected
                         ? "bg-amber-500"
@@ -1318,10 +1359,12 @@ export const ChatWidget: React.FC = () => {
                         : "bg-green-500"
                     }`}
                   />
-                  {/* Without the first branch this reads "Connecting…" forever
+                  {/* Without the sign-in branch this reads "Connecting…" forever
                       for a signed-out visitor, because we deliberately never
                       open a socket for them. */}
-                  {needsLoginForSupport
+                  {!configResolved
+                    ? "Loading…"
+                    : needsLoginForSupport
                     ? "Sign in to start"
                     : mode === "ai"
                     ? "Ready to assist"
@@ -1397,7 +1440,17 @@ export const ChatWidget: React.FC = () => {
             allow finger-drag scrolling INSIDE this region while preventing it
             anywhere else (header, footer, backdrop, host page beneath). */}
         <div ref={messagesScrollRef} className="flex-1 overflow-y-auto overscroll-contain p-4 bg-gray-50/50 flex flex-col gap-4 [scrollbar-width:thin] [scrollbar-color:#CBD5E1_transparent]">
-          {!hasUserMessage && mode === "ai" && (
+          {/* Nothing about either mode until the kill-switch answer lands.
+              `mode` defaults to "ai", so without this gate the AI greeting and
+              the "Try asking about:" prompts painted before we knew whether the
+              assistant was even enabled — the exact flash reported on prod. */}
+          {!configResolved && (
+            <div className="flex-1 flex items-center justify-center">
+              <Loader2 className="w-5 h-5 animate-spin text-primaryGreen/60" />
+            </div>
+          )}
+
+          {configResolved && !hasUserMessage && mode === "ai" && aiAvailable && (
             <div className="flex flex-col gap-2 mb-2 animate-fade-in-up">
               <p className="text-xs font-medium text-gray-500 ml-1">Try asking about:</p>
               <div className="flex flex-col gap-2">
@@ -1490,10 +1543,13 @@ export const ChatWidget: React.FC = () => {
         </div>
 
         {/* Input area — three states for support: open, awaiting-rating, closed.
-            Suppressed entirely when the visitor has to sign in first: there is
-            no conversation to type into, and a dead input is worse than none. */}
+            Suppressed entirely when the visitor has to sign in first (there is
+            no conversation to type into, and a dead input is worse than none)
+            and while the kill-switch answer is still pending — otherwise the
+            "Ask AI to find stays..." placeholder appears before we know whether
+            the assistant is enabled. */}
         <div className="p-4 bg-white border-t border-gray-100 shrink-0">
-          {needsLoginForSupport ? null : mode === "support" &&
+          {!configResolved || needsLoginForSupport ? null : mode === "support" &&
             support.awaitingRating ? (
             <RatingPrompt
               onSubmit={(stars, comment) => support.submitRating(stars, comment)}
@@ -1562,7 +1618,11 @@ export const ChatWidget: React.FC = () => {
           )}
           <div className="text-center mt-2">
             <span className="text-[10px] text-gray-400 font-medium">
-              {mode === "ai"
+              {/* Neutral until resolved — "AI can make mistakes" is an AI
+                  surface too, and it sits below the fold of the same flash. */}
+              {!configResolved
+                ? ""
+                : mode === "ai"
                 ? "AI can make mistakes. Verify important info."
                 : "Powered by Majestic Support"}
             </span>
