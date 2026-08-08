@@ -608,6 +608,13 @@ interface MainMenuDrawerProps {
   isLoggedIn: boolean;
   /** False when the ops kill-switch is off — hides every AI-routing tile. */
   aiAvailable: boolean;
+  /**
+   * False when there is no conversation to clear — anonymous with the
+   * assistant off, where the panel is just a sign-in prompt. "Start fresh"
+   * there is a dead control: it opens a confirmation, and confirming does
+   * nothing visible because there is no AI thread and no support socket.
+   */
+  canStartFresh: boolean;
   mode: ChatMode;
   onClose: () => void;
   onPrompt: (text: string) => void;
@@ -620,6 +627,7 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
   isOpen,
   isLoggedIn,
   aiAvailable,
+  canStartFresh,
   mode,
   onClose,
   onPrompt,
@@ -684,7 +692,9 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
         // assistant disabled those would switch the user to a tab that is no
         // longer rendered and then hit a 403, so drop them rather than leave a
         // dead end in the menu.
-        (t.action.kind !== "prompt" || aiAvailable)
+        (t.action.kind !== "prompt" || aiAvailable) &&
+        // Likewise "start fresh" when there is nothing to clear.
+        (t.action.kind !== "start-fresh" || canStartFresh)
     ),
   })).filter((s) => s.tiles.length > 0);
 
@@ -940,10 +950,26 @@ export const ChatWidget: React.FC = () => {
   // frames this fix exists to remove would still show a lone "AI Assistant".
   const showModeTabs = configResolved && (aiAvailable || supportAvailable);
 
+  // What the UI should actually render, as opposed to what `mode` state happens
+  // to hold right now.
+  //
+  // `mode` defaults to "ai" and is corrected to "support" by an effect once the
+  // kill-switch answer arrives. Effects run AFTER paint, so there was exactly
+  // one frame where configResolved was already true but mode was still "ai" —
+  // long enough to render the "Majestic AI" header, the "Ask AI to find
+  // stays..." placeholder and the AI disclaimer. Reproduced at 375, 390, 414
+  // and 1440px: one frame each, every time.
+  //
+  // Deriving it removes the ordering dependency entirely: when the assistant is
+  // unavailable there is no sequence of renders that can show AI chrome,
+  // regardless of when the effect runs. The effect below still syncs the state
+  // so `setMode` callers stay coherent, but nothing visual depends on it.
+  const effectiveMode: ChatMode = aiAvailable ? mode : "support";
+
   // Show only the active tab's history; AI from local hook, Support from Socket.IO hook.
-  const messages = mode === "ai" ? aiMessages : support.messages;
-  const isLoading = mode === "ai" ? aiLoading : support.isLoading;
-  const error = mode === "ai" ? aiError : support.error;
+  const messages = effectiveMode === "ai" ? aiMessages : support.messages;
+  const isLoading = effectiveMode === "ai" ? aiLoading : support.isLoading;
+  const error = effectiveMode === "ai" ? aiError : support.error;
   const hasUserMessage = messages.some((m) => m.role === "user");
 
   useEffect(() => {
@@ -1229,7 +1255,10 @@ export const ChatWidget: React.FC = () => {
     e?.preventDefault();
     const textToSend = overrideText || inputValue;
     if (!textToSend.trim() || isLoading) return;
-    if (mode === "ai") {
+    // effectiveMode, not mode: while the assistant is unavailable `mode` can
+    // still read "ai" for a frame, and routing a send down the AI path there
+    // would fire a request the server is only going to 403 anyway.
+    if (effectiveMode === "ai") {
       sendAi(textToSend, "ai");
     } else {
       support.sendMessage(textToSend);
@@ -1293,6 +1322,9 @@ export const ChatWidget: React.FC = () => {
           isOpen={menuOpen}
           isLoggedIn={isLoggedIn}
           aiAvailable={aiAvailable}
+          // Anonymous with the assistant off has neither an AI thread nor a
+          // support socket, so there is genuinely nothing to reset.
+          canStartFresh={!needsLoginForSupport}
           mode={mode}
           onClose={() => setMenuOpen(false)}
           onPrompt={(text) => {
@@ -1309,7 +1341,7 @@ export const ChatWidget: React.FC = () => {
           }}
           onSwitchToSupport={() => setMode("support")}
           onStartFresh={() => {
-            if (mode === "ai") {
+            if (effectiveMode === "ai") {
               resetAiMessages();
             } else {
               support.startNewConversation();
@@ -1329,7 +1361,7 @@ export const ChatWidget: React.FC = () => {
               <div className="w-8 h-8 rounded-full bg-primaryGreen text-white flex items-center justify-center">
                 {!configResolved ? (
                   <MessageCircle className="w-4 h-4" />
-                ) : mode === "ai" ? (
+                ) : effectiveMode === "ai" ? (
                   <Sparkles className="w-4 h-4" />
                 ) : (
                   <Headset className="w-4 h-4" />
@@ -1339,7 +1371,7 @@ export const ChatWidget: React.FC = () => {
                 <h3 className="font-semibold text-graphite text-[15px] leading-tight">
                   {!configResolved
                     ? "Majestic Escape"
-                    : mode === "ai"
+                    : effectiveMode === "ai"
                     ? "Majestic AI"
                     : support.assignedAdminName && support.status === "open"
                     ? `${support.assignedAdminName} is helping you`
@@ -1352,9 +1384,9 @@ export const ChatWidget: React.FC = () => {
                         ? "bg-gray-400"
                         : needsLoginForSupport
                         ? "bg-gray-400"
-                        : mode === "support" && !support.isConnected
+                        : effectiveMode === "support" && !support.isConnected
                         ? "bg-amber-500"
-                        : mode === "support" && support.status === "resolved"
+                        : effectiveMode === "support" && support.status === "resolved"
                         ? "bg-gray-400"
                         : "bg-green-500"
                     }`}
@@ -1366,7 +1398,7 @@ export const ChatWidget: React.FC = () => {
                     ? "Loading…"
                     : needsLoginForSupport
                     ? "Sign in to start"
-                    : mode === "ai"
+                    : effectiveMode === "ai"
                     ? "Ready to assist"
                     : !support.isConnected
                     ? "Connecting…"
@@ -1408,7 +1440,7 @@ export const ChatWidget: React.FC = () => {
                 <button
                   onClick={() => setMode("ai")}
                   className={`flex-1 flex items-center justify-center gap-2 py-1.5 text-xs font-medium rounded-md transition-all ${
-                    mode === "ai"
+                    effectiveMode === "ai"
                       ? "bg-white text-primaryGreen shadow-sm"
                       : "text-gray-500 hover:text-gray-700"
                   }`}
@@ -1420,7 +1452,7 @@ export const ChatWidget: React.FC = () => {
                 <button
                   onClick={() => setMode("support")}
                   className={`flex-1 flex items-center justify-center gap-2 py-1.5 text-xs font-medium rounded-md transition-all ${
-                    mode === "support"
+                    effectiveMode === "support"
                       ? "bg-white text-primaryGreen shadow-sm"
                       : "text-gray-500 hover:text-gray-700"
                   }`}
@@ -1450,7 +1482,7 @@ export const ChatWidget: React.FC = () => {
             </div>
           )}
 
-          {configResolved && !hasUserMessage && mode === "ai" && aiAvailable && (
+          {configResolved && !hasUserMessage && effectiveMode === "ai" && aiAvailable && (
             <div className="flex flex-col gap-2 mb-2 animate-fade-in-up">
               <p className="text-xs font-medium text-gray-500 ml-1">Try asking about:</p>
               <div className="flex flex-col gap-2">
@@ -1494,7 +1526,7 @@ export const ChatWidget: React.FC = () => {
             </div>
           )}
 
-          {!hasUserMessage && mode === "support" && !needsLoginForSupport && (
+          {!hasUserMessage && effectiveMode === "support" && !needsLoginForSupport && (
             <div className="flex flex-col gap-2 mb-2 animate-fade-in-up">
               <p className="text-xs font-medium text-gray-500 ml-1">How can we help you?</p>
               <div className="flex flex-col gap-2">
@@ -1549,7 +1581,7 @@ export const ChatWidget: React.FC = () => {
             "Ask AI to find stays..." placeholder appears before we know whether
             the assistant is enabled. */}
         <div className="p-4 bg-white border-t border-gray-100 shrink-0">
-          {!configResolved || needsLoginForSupport ? null : mode === "support" &&
+          {!configResolved || needsLoginForSupport ? null : effectiveMode === "support" &&
             support.awaitingRating ? (
             <RatingPrompt
               onSubmit={(stars, comment) => support.submitRating(stars, comment)}
@@ -1560,7 +1592,7 @@ export const ChatWidget: React.FC = () => {
               alreadyRated={!!support.rating}
               ratingValue={support.rating?.stars ?? 0}
             />
-          ) : mode === "support" && support.status === "resolved" ? (
+          ) : effectiveMode === "support" && support.status === "resolved" ? (
             <div className="flex flex-col items-center gap-2">
               <p className="text-[12px] text-stone text-center">
                 {support.rating
@@ -1576,7 +1608,7 @@ export const ChatWidget: React.FC = () => {
             </div>
           ) : (
             <>
-              {mode === "support" && support.peerTyping && (
+              {effectiveMode === "support" && support.peerTyping && (
                 <div className="px-1 mb-1 text-[11px] text-stone italic flex items-center gap-1.5 animate-fade-in-up">
                   <span className="flex gap-0.5">
                     <span className="w-1 h-1 bg-stone rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
@@ -1593,17 +1625,17 @@ export const ChatWidget: React.FC = () => {
                   value={inputValue}
                   onChange={(e) => {
                     setInputValue(e.target.value);
-                    if (mode === "support") support.notifyTyping();
+                    if (effectiveMode === "support") support.notifyTyping();
                   }}
                   onKeyDown={handleKeyDown}
-                  placeholder={mode === "ai" ? "Ask AI to find stays..." : "Type your message..."}
+                  placeholder={effectiveMode === "ai" ? "Ask AI to find stays..." : "Type your message..."}
                   className="w-full bg-gray-100 border border-transparent text-graphite text-[14px] rounded-full pl-4 pr-12 py-3 focus:outline-none focus:bg-white focus:border-primaryGreen focus:ring-1 focus:ring-primaryGreen transition-all placeholder:text-gray-400 disabled:opacity-60"
-                  disabled={isLoading || (mode === "support" && !support.isConnected)}
+                  disabled={isLoading || (effectiveMode === "support" && !support.isConnected)}
                   maxLength={2000}
                 />
               <button
                 type="submit"
-                disabled={!inputValue.trim() || isLoading || (mode === "support" && !support.isConnected)}
+                disabled={!inputValue.trim() || isLoading || (effectiveMode === "support" && !support.isConnected)}
                 className="absolute right-1.5 p-2 bg-primaryGreen text-white rounded-full hover:bg-brightGreen disabled:opacity-50 transition-colors flex items-center justify-center"
                 aria-label="Send message"
               >
@@ -1622,7 +1654,7 @@ export const ChatWidget: React.FC = () => {
                   surface too, and it sits below the fold of the same flash. */}
               {!configResolved
                 ? ""
-                : mode === "ai"
+                : effectiveMode === "ai"
                 ? "AI can make mistakes. Verify important info."
                 : "Powered by Majestic Support"}
             </span>
