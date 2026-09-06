@@ -1,4 +1,5 @@
 import { MongoClient } from "mongodb";
+import { attachPoolMetrics } from "./processMetrics";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -11,6 +12,11 @@ function ensureConnection(): Promise<MongoClient> {
   if (cached) return cached;
   if (global._mongoClientPromise) {
     cached = global._mongoClientPromise;
+    // HMR / second module instance: the client already exists, so attach once it
+    // resolves. The second argument swallows a connect failure that the real
+    // caller will see anyway — without it this observational `.then` would raise
+    // an unhandled rejection.
+    cached.then(attachPoolMetrics, () => {});
     return cached;
   }
   const uri = process.env.MONGODB_URI;
@@ -18,6 +24,9 @@ function ensureConnection(): Promise<MongoClient> {
     return Promise.reject(new Error("[mongodb] MONGODB_URI not set"));
   }
   const client = new MongoClient(uri);
+  // Before `.connect()`, so the pool-creation and initial handshake connections
+  // are counted rather than missed. `attachPoolMetrics` is idempotent.
+  attachPoolMetrics(client);
   global._mongoClientPromise = client.connect();
   cached = global._mongoClientPromise;
   return cached;
