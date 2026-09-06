@@ -35,9 +35,10 @@ You're working on `majestic-escape-rag-ai-chat-widget` — a Next.js 15 service 
 
 ```bash
 npm run dev            # tsx server.ts — Next + Socket.IO + workers, port 3003
-npm run build          # build:embed (vite) → next build. Railway runs this.
+npm run build          # build:embed (vite) → next build → build:server (esbuild). Railway runs this.
 npm run build:embed    # vite build → public/embed/widget.js (~92 kB gzipped)
-npm start              # NODE_ENV=production tsx server.ts
+npm run build:server   # esbuild server.ts + src/** → dist/server.cjs
+npm start              # NODE_ENV=production node dist/server.cjs (precompiled — NOT tsx)
 npm run atlas:create-index  # idempotently create the listing_vector_index
 ```
 
@@ -160,6 +161,36 @@ The auto-ack on first user message is a **static template** chosen between `isFi
 Keep it server-side, persisted, and templated.
 
 ## Common pitfalls
+
+### Production runs a precompiled bundle — two invariants to keep
+
+`npm start` runs `node dist/server.cjs`, built by `scripts/build-server.mjs`
+(esbuild). It used to run `tsx server.ts`, i.e. a TypeScript compiler stayed
+resident for the life of the process. Removing it cut idle RSS by **25%**
+(197 MB → 148 MB measured locally, A-B-A'd against machine drift), which matters
+because Railway bills this service overwhelmingly for memory. A useful side
+effect: production no longer depends on a devDependency at *runtime*.
+
+Two things will silently break it:
+
+1. **No module-scope `process.env` reads in `server.ts`'s import graph.**
+   `server.ts` calls `loadEnvConfig()` and then `await import()`s the workers
+   specifically so env is populated first. Today every `process.env` read in
+   `src/workers/**` and `src/lib/**` is inside a function body, which is what
+   makes bundling safe — esbuild wraps dynamically-imported modules in lazy
+   initialisers, so they still evaluate after `loadEnvConfig`. If you add a
+   `const X = process.env.Y` at module top level, you reintroduce the ordering
+   bug the dynamic imports exist to prevent.
+
+2. **Output must stay CommonJS.** ESM output was tried and fails at boot twice:
+   `loadEnvConfig` is undetectable as a named export from the CJS `@next/env`,
+   and after bundling that package you get `__dirname is not defined in ES module
+   scope`. `tsx` hides both behind its `require` interop. Don't "modernise" the
+   build to ESM without re-running the boot test.
+
+`dist/` is gitignored; Railway regenerates it via `npm run build`. If you change
+`server.ts` or anything it imports, `npm run build:server` before `npm start`, or
+you'll run a stale bundle and wonder why your change did nothing.
 
 ### Bundle cache during dev
 

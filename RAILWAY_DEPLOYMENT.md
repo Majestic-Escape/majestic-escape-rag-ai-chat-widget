@@ -164,7 +164,11 @@ if a CSP is configured.
 
 > **Do NOT set `PORT`.** Railway injects it automatically and the code reads `process.env.PORT`.
 
-> **Do NOT set `NODE_ENV`.** Our `npm start` script (`cross-env NODE_ENV=production tsx server.ts`) sets it.
+> **Do NOT set `NODE_ENV`.** Our `npm start` script (`cross-env NODE_ENV=production node dist/server.cjs`) sets it.
+>
+> Setting it in Railway would also break the build: `esbuild` and `next` are
+> devDependencies, and `NODE_ENV=production` makes `npm install` skip them, so
+> `npm run build` would fail before it could produce `dist/server.cjs`.
 
 After saving, Railway will trigger a fresh build automatically.
 
