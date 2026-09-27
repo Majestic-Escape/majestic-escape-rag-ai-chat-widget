@@ -11,7 +11,8 @@
     "lint": "next lint",
     "atlas:create-index": "node scripts/createVectorIndex.js",
     "verify:ai-toggle": "tsx scripts/verify-ai-toggle.ts",
-    "verify:support": "tsx scripts/verify-support-socket.ts"
+    "verify:support": "tsx scripts/verify-support-socket.ts",
+    "verify:support-routes": "tsx scripts/verify-support-routes.ts"
   },
   "dependencies": {
     "@google/genai": "^1.0.0",
