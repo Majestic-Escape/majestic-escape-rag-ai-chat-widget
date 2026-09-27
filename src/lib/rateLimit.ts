@@ -51,6 +51,92 @@ export function ipFromHeaders(headers: Headers): string {
   return "unknown";
 }
 
+// ─── Keyed mutex ─────────────────────────────────────────────────────────────
+//
+// Runs `fn` alone for its key, in arrival order, on this process (the support
+// server is one Railway instance; anything that must hold across instances
+// is enforced in the database instead). The lock is released only when
+// `fn` settles — never on a timer — because a timed-out promise does not stop
+// its database work, and releasing early would let the next holder overlap
+// it. Waiting is bounded: a waiter that gets no turn within `waitMs` gives up
+// with "busy" without ever running, and its place in the chain opens as soon
+// as the holder before it finishes, so later waiters keep their order.
+const keyLocks = new Map<string, Promise<void>>();
+
+export function withKeyLock<T>(key: string, fn: () => Promise<T>, waitMs = 10_000): Promise<T> {
+  const previous = keyLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const done = new Promise<void>((resolve) => (release = resolve));
+  const tail = previous.then(() => done);
+  keyLocks.set(key, tail);
+  void tail.then(() => {
+    if (keyLocks.get(key) === tail) keyLocks.delete(key);
+  });
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const turn = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), waitMs);
+    void previous.then(() => resolve(true));
+  });
+  return turn.then(async (mine) => {
+    if (timer) clearTimeout(timer);
+    if (!mine) {
+      void previous.then(release);
+      throw new Error("busy — try again in a moment");
+    }
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  });
+}
+
+// Number of keys currently locked or waited on (tests assert it drains to 0).
+export function keyLockCount(): number {
+  return keyLocks.size;
+}
+
+// ─── Serial queue ────────────────────────────────────────────────────────────
+//
+// One per socket: its lifecycle events (join, start, message, admin actions)
+// run one at a time in arrival order, so a join can never interleave with the
+// same socket's first message. Bounded: more than `max` waiting tasks are
+// refused, and a task that waited longer than `expireMs` is dropped without
+// running (it never started, so nothing overlaps).
+export interface SerialQueue {
+  run<T>(task: () => Promise<T>): Promise<T>;
+  readonly pending: number;
+}
+
+export function createSerialQueue(max = 32, expireMs = 15_000): SerialQueue {
+  let tail: Promise<void> = Promise.resolve();
+  let pending = 0;
+  return {
+    get pending() {
+      return pending;
+    },
+    run<T>(task: () => Promise<T>): Promise<T> {
+      if (pending >= max) return Promise.reject(new Error("too many requests at once — try again"));
+      pending++;
+      const queuedAt = Date.now();
+      const result = tail.then(() => {
+        if (Date.now() - queuedAt > expireMs) throw new Error("request expired — try again");
+        return task();
+      });
+      tail = result.then(
+        () => {
+          pending--;
+        },
+        () => {
+          pending--;
+        }
+      );
+      return result;
+    },
+  };
+}
+
 // Concurrency lock for global one-at-a-time operations (e.g., bulk re-index).
 const locks = new Set<string>();
 
