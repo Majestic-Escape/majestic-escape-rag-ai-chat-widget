@@ -25,6 +25,14 @@ export interface Message {
   authorName?: string | null;
   systemKind?: SystemMessageKind;
   properties?: PropertyCardData[];
+  /**
+   * Support messages from this device that the server hasn't confirmed yet.
+   * "sending": waiting for the server; "failed": the server refused it (not
+   * stored — `failureReason` says why); "unconfirmed": no answer came, so it
+   * may or may not be stored. Absent once the server has it.
+   */
+  deliveryState?: "sending" | "failed" | "unconfirmed";
+  failureReason?: string;
 }
 
 export type ChatMode = "ai" | "support";
