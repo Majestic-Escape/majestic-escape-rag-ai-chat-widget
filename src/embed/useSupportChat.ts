@@ -45,13 +45,18 @@ export interface UseSupportChat {
   rating: SupportRating | null;
   awaitingRating: boolean;
   peerTyping: boolean;
+  /** The conversation has come in from the server at least once (kept through reconnects). */
+  joined: boolean;
   connect: () => void;
   disconnect: () => void;
-  sendMessage: (text: string) => void;
+  /** Whether the message went out; if not, the caller keeps it (the reason is in `error`). */
+  sendMessage: (text: string) => boolean;
   notifyTyping: () => void;
   submitRating: (stars: number, comment?: string) => void;
   dismissRating: () => void;
   startNewConversation: () => void;
+  /** Hang up and drop the conversation, for when the signed-in person changes. */
+  forget: () => void;
 }
 
 export function useSupportChat(): UseSupportChat {
@@ -64,6 +69,9 @@ export function useSupportChat(): UseSupportChat {
   const [rating, setRating] = useState<SupportRating | null>(null);
   const [awaitingRating, setAwaitingRating] = useState(false);
   const [peerTyping, setPeerTyping] = useState(false);
+  // Not reset on disconnect: the panel keeps showing the conversation while
+  // it reconnects, instead of an empty state that the history then replaces.
+  const [joined, setJoined] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const conversationIdRef = useRef<string | null>(null);
@@ -139,6 +147,9 @@ export function useSupportChat(): UseSupportChat {
           isSupport: true,
         };
         setMessages(history.length > 0 ? history : [greeting]);
+        setJoined(true);
+        // e.g. "Not connected to support yet" from a send just before the join
+        setError(null);
       }
     );
 
@@ -240,16 +251,16 @@ export function useSupportChat(): UseSupportChat {
   }, [disconnect]);
 
   const sendMessage = useCallback(
-    (text: string) => {
+    (text: string): boolean => {
       const trimmed = text.trim();
-      if (!trimmed) return;
+      if (!trimmed) return false;
       if (status === "resolved") {
         setError("This conversation has been closed. Start a new one to continue.");
-        return;
+        return false;
       }
       if (!socketRef.current?.connected || !conversationIdRef.current) {
         setError("Not connected to support yet — please wait a moment.");
-        return;
+        return false;
       }
       setIsLoading(true);
       setError(null);
@@ -277,6 +288,7 @@ export function useSupportChat(): UseSupportChat {
         }
       );
       setTimeout(() => setIsLoading(false), 5000);
+      return true;
     },
     [status]
   );
@@ -340,6 +352,7 @@ export function useSupportChat(): UseSupportChat {
     setAssignedAdminName(null);
     setRating(null);
     setAwaitingRating(false);
+    setJoined(false);
     conversationIdRef.current = null;
 
     if (wasAwaitingRating && conversationId) {
@@ -359,6 +372,19 @@ export function useSupportChat(): UseSupportChat {
     }
   }, [status, awaitingRating]);
 
+  const forget = useCallback(() => {
+    disconnect();
+    setMessages([]);
+    setStatus(null);
+    setAssignedAdminName(null);
+    setRating(null);
+    setAwaitingRating(false);
+    setPeerTyping(false);
+    setIsLoading(false);
+    setError(null);
+    setJoined(false);
+  }, [disconnect]);
+
   return {
     messages,
     isConnected,
@@ -369,6 +395,7 @@ export function useSupportChat(): UseSupportChat {
     rating,
     awaitingRating,
     peerTyping,
+    joined,
     connect,
     disconnect,
     sendMessage,
@@ -376,5 +403,6 @@ export function useSupportChat(): UseSupportChat {
     submitRating,
     dismissRating,
     startNewConversation,
+    forget,
   };
 }

@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useCurrentPathname, getBackendUrl } from "./utils";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCurrentPathname, getBackendUrl, getAuthToken } from "./utils";
 import {
   X,
   Send,
@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { useChat } from "./useChat";
 import { useSupportChat } from "./useSupportChat";
+import { ComposerField } from "./ComposerField";
 import { Message, ChatMode, PropertyCardData } from "./types";
 
 const aiQuickPrompts = [
@@ -605,6 +606,8 @@ const MENU_SECTIONS: MenuSection[] = [
 
 interface MainMenuDrawerProps {
   isOpen: boolean;
+  /** Where focus goes when the drawer closes with focus inside it (the menu button). */
+  returnFocusRef: React.RefObject<HTMLButtonElement | null>;
   isLoggedIn: boolean;
   /** False when the ops kill-switch is off — hides every AI-routing tile. */
   aiAvailable: boolean;
@@ -625,6 +628,7 @@ interface MainMenuDrawerProps {
 
 const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
   isOpen,
+  returnFocusRef,
   isLoggedIn,
   aiAvailable,
   canStartFresh,
@@ -660,6 +664,21 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
   useEffect(() => {
     if (!isOpen) setConfirmStartFresh(false);
   }, [isOpen]);
+
+  // Focus follows the drawer: into it when it opens (it is a modal dialog),
+  // and back to the menu button when it closes with focus inside — it is
+  // inert then, so focus would otherwise drop out of the chat.
+  const wasOpenRef = useRef(isOpen);
+  useLayoutEffect(() => {
+    const drawer = drawerRef.current;
+    if (!drawer || isOpen === wasOpenRef.current) return;
+    wasOpenRef.current = isOpen;
+    if (isOpen) {
+      drawer.focus({ preventScroll: true });
+    } else if (drawer.contains((drawer.getRootNode() as Document | ShadowRoot).activeElement)) {
+      returnFocusRef.current?.focus({ preventScroll: true });
+    }
+  }, [isOpen, returnFocusRef]);
 
   const handleTile = (tile: MenuTile) => {
     switch (tile.action.kind) {
@@ -709,17 +728,26 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
         }`}
       />
 
-      {/* Drawer panel — slides down from the top of the chat panel. */}
+      {/* Drawer panel — slides down from the top of the chat panel. Inert
+          while closed, so its tiles aren't hidden stops in the Tab order, and
+          `invisible` once it has slid away: parked above the panel, its
+          shadow used to show as a grey band across the top of the header
+          (and its blur layer kept compositing). */}
       <div
         ref={drawerRef}
         role="dialog"
         aria-modal="true"
         aria-label="Chatbot menu"
+        inert={!isOpen}
+        tabIndex={-1}
         className={`
-          absolute left-0 right-0 top-0 z-40 max-h-[88%] overflow-y-auto
-          bg-white/98 backdrop-blur-md shadow-xl rounded-t-2xl
-          transition-transform duration-200 ease-out
-          ${isOpen ? "translate-y-0" : "-translate-y-full pointer-events-none"}
+          absolute left-0 right-0 top-0 z-40 max-h-[88%] overflow-y-auto outline-none
+          bg-white/98 backdrop-blur-md shadow-xl rounded-t-2xl duration-200 ease-out
+          ${
+            isOpen
+              ? "visible translate-y-0 transition-transform"
+              : "invisible -translate-y-full pointer-events-none transition-[transform,visibility]"
+          }
         `}
       >
         {/* Drawer header */}
@@ -889,6 +917,40 @@ const LAUNCHER_OFFSET = "bottom-28 md:bottom-6";
 const Z_BACKDROP = "z-[2147483000]";
 const Z_PANEL_STACK = "z-[2147483001]";
 
+// Opening and closing. Closing is quicker, so it feels immediate. While the
+// panel fades out nothing inside it changes — no reconnect status, no layout
+// switch, no drawer sliding away — and whatever has to be reset is reset once
+// it is gone, so the next open starts clean instead of correcting itself on
+// screen. Keep in step with the `duration-200` of the closed states below.
+const PANEL_EXIT_MS = 200;
+// Resets wait until the fade has surely finished — its last frame can land a
+// little after PANEL_EXIT_MS, and a reset in it would show.
+const PANEL_GONE_MS = PANEL_EXIT_MS + 150;
+
+// An on-screen keyboard takes at least this much height off the visual
+// viewport; the browser toolbars that slide in and out take less.
+const KEYBOARD_MIN_PX = 150;
+
+// A support (re)connect quicker than this doesn't show "Connecting…". Every
+// open reconnects, and a quick one shouldn't flash the header.
+const CONNECTING_GRACE_MS = 800;
+
+// Within this of the end of the conversation, the reader is following along
+// and the list sticks to its end when it changes height; further up they are
+// reading back and the list is left where it is.
+const FOLLOWING_PX = 24;
+
+// A field of the panel has focus: the message box, or the rating's comment.
+function isEditingIn(panel: HTMLElement | null): boolean {
+  if (!panel) return false;
+  const active = (panel.getRootNode() as Document | ShadowRoot).activeElement;
+  return (
+    !!active &&
+    panel.contains(active) &&
+    (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement)
+  );
+}
+
 export const ChatWidget: React.FC = () => {
   const pathname = useCurrentPathname();
   const hidden = shouldHideOnPath(pathname);
@@ -919,11 +981,16 @@ export const ChatWidget: React.FC = () => {
     sendMessage: sendAi,
     initChat: initAi,
     resetAiMessages,
+    aiHistoryReady,
+    forgetAi,
   } = useChat();
   const support = useSupportChat();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const insetProbeRef = useRef<HTMLSpanElement>(null); // reads env(safe-area-inset-bottom)
+  const launcherRef = useRef<HTMLButtonElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
 
   // Which tabs the user may actually see.
   //   configResolved   — /api/chat/config has answered; until then we know
@@ -972,15 +1039,86 @@ export const ChatWidget: React.FC = () => {
   const error = effectiveMode === "ai" ? aiError : support.error;
   const hasUserMessage = messages.some((m) => m.role === "user");
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading, mode]);
+  // Keep the end of the conversation in view. `fromBottom` is how far the
+  // reader is from the end: 0 while following along, more once they scroll up
+  // to read. A new message scrolls to the end — gliding for one message,
+  // jumping for a whole history or a tab switch, which would otherwise scroll
+  // through all of it on open. When the list changes height (the keyboard
+  // opening or closing, the header folding, the typing indicator) a reader
+  // following along stays at the end, as in a native chat app; one reading
+  // back is left alone (the layout effect after the visual viewport one).
+  // Scrolling the list itself, not scrollIntoView, which can also pan the
+  // page on iOS.
+  const fromBottomRef = useRef(0);
+  const glideUntilRef = useRef(0);
+  const lastScrollTopRef = useRef(0);
+  const listHeightRef = useRef(0); // the list height fromBottom was measured at
+  const lastListRef = useRef({ mode: effectiveMode, count: 0 });
+
+  const scrollToEnd = useCallback((behavior: ScrollBehavior) => {
+    const list = messagesScrollRef.current;
+    if (!list) return;
+    fromBottomRef.current = 0;
+    lastScrollTopRef.current = list.scrollTop;
+    glideUntilRef.current = behavior === "smooth" ? performance.now() + 1000 : 0;
+    list.scrollTo({ top: list.scrollHeight, behavior });
+  }, []);
+
+  const onMessagesScroll = useCallback(() => {
+    const list = messagesScrollRef.current;
+    if (!list) return;
+    // The list has changed height and the browser has moved it (WebKit clamps
+    // before our ResizeObserver runs): that isn't the reader either — the
+    // observer re-anchors from where they were.
+    if (list.clientHeight !== listHeightRef.current && typeof ResizeObserver !== "undefined") return;
+    const top = list.scrollTop;
+    // A glide to the end fires scroll events on its way down; those aren't the
+    // reader leaving the end. Scrolling up is, even mid-glide.
+    const gliding = performance.now() < glideUntilRef.current && top >= lastScrollTopRef.current;
+    lastScrollTopRef.current = top;
+    if (gliding) return;
+    glideUntilRef.current = 0;
+    fromBottomRef.current = Math.max(0, list.scrollHeight - top - list.clientHeight);
+  }, []);
+
+  // Before paint: a history that has just arrived is never shown from its top first.
+  useLayoutEffect(() => {
+    const last = lastListRef.current;
+    const jump =
+      last.mode !== effectiveMode || last.count === 0 || Math.abs(messages.length - last.count) > 2;
+    lastListRef.current = { mode: effectiveMode, count: messages.length };
+    scrollToEnd(jump ? "auto" : "smooth");
+  }, [messages, isLoading, effectiveMode, scrollToEnd]);
 
   // Close the menu when the entire chat panel closes — otherwise reopening
-  // the chat would surface yesterday's open menu.
+  // the chat would surface yesterday's open menu. Once the panel has faded
+  // out, so the drawer doesn't slide away on a closing panel.
   useEffect(() => {
-    if (!isOpen) setMenuOpen(false);
+    if (isOpen) return;
+    const t = setTimeout(() => setMenuOpen(false), PANEL_GONE_MS);
+    return () => clearTimeout(t);
   }, [isOpen]);
+
+  // Whose chats the panel holds. The site signs people in and out without
+  // reloading the page, and the panel keeps its conversations while closed
+  // so reopening doesn't flash an empty state — so when a signed-in person
+  // has signed out (or someone else has signed in) since the last open, their
+  // conversations and draft are dropped here, before anything is painted. A
+  // guest who signs in keeps what they asked as a guest: that thread belongs
+  // to this device, which anyone on it can already open.
+  const identityRef = useRef<string | null>(null);
+  const forgetSupport = support.forget;
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const identity = getAuthToken() ?? "guest";
+    const previous = identityRef.current;
+    if (previous !== null && previous !== "guest" && previous !== identity) {
+      forgetSupport();
+      forgetAi();
+      setInputValue("");
+    }
+    identityRef.current = identity;
+  }, [isOpen, forgetSupport, forgetAi]);
 
   // AI greeting on open (Support greeting comes from server when Socket.IO joins).
   // NOTE: we deliberately DO NOT autofocus the input here — auto-focus opens
@@ -1043,7 +1181,9 @@ export const ChatWidget: React.FC = () => {
   }, [configResolved, aiAvailable, mode]);
 
   // Re-detect login when the panel opens. Anonymous users see only AI Assistant.
-  useEffect(() => {
+  // Before paint: `isLoggedIn` starts false, so a signed-in visitor's first
+  // open drew the "Sign in" prompt (assistant off) for a frame otherwise.
+  useLayoutEffect(() => {
     if (!isOpen) return;
     if (typeof window === "undefined") return;
     const raw = localStorage.getItem("token") || localStorage.getItem("authToken");
@@ -1080,10 +1220,42 @@ export const ChatWidget: React.FC = () => {
     // would retry a doomed handshake for every logged-out visitor.
     if (isOpen && mode === "support" && supportAvailable) {
       connectSupport();
-    } else {
-      disconnectSupport();
+      return;
     }
+    if (isOpen) {
+      disconnectSupport();
+      return;
+    }
+    // Closing: hang up once the panel has faded out. Hanging up at once
+    // flipped the fading header to "Connecting…" and dimmed the message box.
+    // Reopening within the fade keeps the same socket.
+    const t = setTimeout(disconnectSupport, PANEL_GONE_MS);
+    return () => clearTimeout(t);
   }, [isOpen, mode, supportAvailable, connectSupport, disconnectSupport]);
+
+  // "Connecting…" only for a (re)connect that takes a while; see
+  // CONNECTING_GRACE_MS. Timed per stretch the Support tab is offline, so a
+  // switch from the AI tab gets the grace too; left as it is while the panel
+  // is closed, so a fading header doesn't change.
+  const supportOffline = effectiveMode === "support" && !support.isConnected;
+  const [slowConnect, setSlowConnect] = useState(false);
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!supportOffline) {
+      setSlowConnect(false);
+      return;
+    }
+    const t = setTimeout(() => setSlowConnect(true), CONNECTING_GRACE_MS);
+    return () => clearTimeout(t);
+  }, [isOpen, supportOffline]);
+
+  // The site can take the visitor to a page without the chat while it's open
+  // — to sign-in when a session expires, for one. Close it, or it would come
+  // back already open (skipping the check above), possibly for the next
+  // person to sign in.
+  useEffect(() => {
+    if (hidden) setIsOpen(false);
+  }, [hidden]);
 
   // Browser-back closes the panel on mobile + tablet only. Pushes a sentinel
   // history entry when the panel opens; popping it (via the system back gesture
@@ -1207,35 +1379,74 @@ export const ChatWidget: React.FC = () => {
   // input into view — which drags the header off-screen. We expose the
   // visible-area height as `--mc-vvh` on the host element; the panel reads it
   // via `max-lg:h-[calc(var(--mc-vvh,100dvh)-16px)]`. Desktop ignores the var
-  // because `lg:h-[650px]` wins inside the `min-width: 1024px` media query.
-  useEffect(() => {
+  // because `lg:h-[760px]` wins inside the `min-width: 1024px` media query.
+  //
+  // The same reading decides whether the panel is in its typing layout
+  // (`data-typing`): WhatsApp-style — edge to edge, a one-row header, no tab
+  // strip or footer — so the conversation keeps the room between the header
+  // and the keyboard. It is on while a field of the panel has focus and the
+  // visible area has lost at least a keyboard's height: against its height
+  // with no field focused (every browser), or against the layout viewport,
+  // which the keyboard doesn't shrink on Chrome/Safari (covers rotating with
+  // the keyboard up). A hardware keyboard takes no height, so no typing
+  // layout for it. Like the size, it is set on the element rather than
+  // through React state, so both change in the same frame and nothing
+  // re-renders; the `group-data-[typing]/panel:` classes do the rest. The
+  // list keeps its bottom anchored through the change (the layout effect
+  // below), so the latest message stays just above the field.
+  //
+  // A layout effect, so the first frame of an open is already sized right.
+  // On close the panel is frozen as it is for its fade-out, then reset.
+  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useLayoutEffect(() => {
     if (!isOpen || typeof window === "undefined") return;
+    clearTimeout(settleTimerRef.current); // reopened mid-fade: carry on from here
     const mql = window.matchMedia("(max-width: 1023px)");
     const vv = window.visualViewport;
     const host = document.querySelector("majestic-chat-widget") as HTMLElement | null;
-    if (!host || !vv) return;
+    const panel = panelRef.current;
+    const insetProbe = insetProbeRef.current;
+    if (!host || !vv || !panel) return;
+    const readInset = () => (insetProbe ? parseFloat(getComputedStyle(insetProbe).paddingBottom) || 0 : 0);
+    let restingHeight = 0;
+    let restingWidth = window.innerWidth;
+    let restingInset = readInset();
     const update = () => {
+      let keyboardUp = false;
       if (mql.matches) {
-        const prev = parseFloat(host.style.getPropertyValue("--mc-vvh")) || 0;
-        host.style.setProperty("--mc-vvh", `${vv.height}px`);
+        const height = vv.height;
+        // a new width (rotating, resizing) has a resting height of its own
+        if (window.innerWidth !== restingWidth) {
+          restingWidth = window.innerWidth;
+          restingHeight = height;
+        }
+        const editing = isEditingIn(panel);
+        if (!editing || height > restingHeight) restingHeight = height;
+        keyboardUp =
+          editing &&
+          (restingHeight - height >= KEYBOARD_MIN_PX || window.innerHeight - height >= KEYBOARD_MIN_PX);
+        // Chrome on Android draws under the navigation bar here (the site's
+        // viewport-fit=cover) and reports the bar as a bottom safe-area
+        // inset. With the keyboard up it drops that inset yet still counts
+        // the bar in the visual viewport, which then reaches that far behind
+        // the keyboard — 24px on a Pixel, enough to hide the message box's
+        // lower edge. Take off whatever inset the keyboard made disappear.
+        // (iOS keeps its inset while typing, and its viewport is right.)
+        const inset = readInset();
+        if (!keyboardUp) restingInset = inset;
+        const behindKeyboard = keyboardUp ? Math.max(0, restingInset - inset) : 0;
+        host.style.setProperty("--mc-vvh", `${height - behindKeyboard}px`);
         // `offsetTop` shifts when iOS/Android moves the visual viewport down
         // to keep the focused input visible while the keyboard is up. Pinning
         // the panel's top to that offset (plus the 8 px margin) keeps the
         // header and panel inside the visible area instead of being scrolled
         // off behind the URL/status bar at the top of the layout viewport.
         host.style.setProperty("--mc-vvtop", `${vv.offsetTop}px`);
-        // When the visible area shrinks (i.e. the keyboard just opened), scroll
-        // the latest message into view so it stays just above the input field.
-        // Wait one frame so the panel has reflowed before we measure scrollHeight.
-        if (vv.height < prev) {
-          requestAnimationFrame(() => {
-            messagesEndRef.current?.scrollIntoView({ block: "end" });
-          });
-        }
       } else {
         host.style.removeProperty("--mc-vvh");
         host.style.removeProperty("--mc-vvtop");
       }
+      panel.toggleAttribute("data-typing", keyboardUp);
     };
     update();
     // Safari fires `scroll` (not `resize`) when the keyboard opens on input
@@ -1247,26 +1458,127 @@ export const ChatWidget: React.FC = () => {
       vv.removeEventListener("resize", update);
       vv.removeEventListener("scroll", update);
       mql.removeEventListener("change", update);
-      host.style.removeProperty("--mc-vvh");
+      settleTimerRef.current = setTimeout(() => {
+        host.style.removeProperty("--mc-vvh");
+        host.style.removeProperty("--mc-vvtop");
+        panel.removeAttribute("data-typing");
+      }, PANEL_GONE_MS);
     };
+    // `hidden`: the panel is a new element after the widget comes back on a route
+  }, [isOpen, hidden]);
+  useEffect(() => () => clearTimeout(settleTimerRef.current), []);
+
+  // A reader following along stays at the end when the list changes height (see fromBottomRef).
+  // After the effect above, so an open is anchored at its final size — the
+  // panel may have been reset to another size while it was closed.
+  useLayoutEffect(() => {
+    const list = messagesScrollRef.current;
+    if (!isOpen || !list) return;
+    const anchor = () => {
+      listHeightRef.current = list.clientHeight;
+      if (fromBottomRef.current <= FOLLOWING_PX) {
+        fromBottomRef.current = 0;
+        list.scrollTop = list.scrollHeight - list.clientHeight;
+      } else {
+        // reading back: the view stays where it is, as the browser keeps it
+        fromBottomRef.current = Math.max(0, list.scrollHeight - list.scrollTop - list.clientHeight);
+      }
+    };
+    anchor();
+    if (typeof ResizeObserver === "undefined") return;
+    // Called after layout and before paint: a new size is never shown unanchored.
+    const observer = new ResizeObserver(() => {
+      if (list.clientHeight !== listHeightRef.current) anchor();
+    });
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [isOpen, hidden]);
+
+  // Focus follows the panel: into it when it opens (the panel itself, not the
+  // message box, which would pop the phone keyboard), and off it when it
+  // closes — never left on a hidden control. Back to the launcher after a
+  // keyboard close (Esc, or Enter/Space on the close button); after a tap,
+  // click or Back gesture it's just released, since moving it from the
+  // message box would light the launcher's keyboard focus ring.
+  const wasOpenRef = useRef(false);
+  const closedByKeyboardRef = useRef(false);
+  useLayoutEffect(() => {
+    if (isOpen === wasOpenRef.current) return;
+    wasOpenRef.current = isOpen;
+    const panel = panelRef.current;
+    if (!panel) return;
+    if (isOpen) {
+      panel.focus({ preventScroll: true });
+      return;
+    }
+    const active = (panel.getRootNode() as Document | ShadowRoot).activeElement;
+    if (active instanceof HTMLElement && panel.contains(active)) {
+      if (closedByKeyboardRef.current) launcherRef.current?.focus({ preventScroll: true });
+      else active.blur();
+    }
+    closedByKeyboardRef.current = false;
   }, [isOpen]);
+
+  // The message box stays editable while a reply streams in or support
+  // (re)connects — disabling it dropped its focus, which closed the phone
+  // keyboard after every message. Only sending waits; the text stays put.
+  const canSend = !isLoading && !supportOffline;
+  const showConnecting = supportOffline && slowConnect;
 
   const handleSend = (e?: React.FormEvent, overrideText?: string) => {
     e?.preventDefault();
-    const textToSend = overrideText || inputValue;
-    if (!textToSend.trim() || isLoading) return;
+    const textToSend = overrideText ?? inputValue;
+    if (!textToSend.trim() || !canSend) return;
     // effectiveMode, not mode: while the assistant is unavailable `mode` can
     // still read "ai" for a frame, and routing a send down the AI path there
     // would fire a request the server is only going to 403 anyway.
+    let sent = true;
     if (effectiveMode === "ai") {
       sendAi(textToSend, "ai");
     } else {
-      support.sendMessage(textToSend);
+      sent = support.sendMessage(textToSend);
     }
-    setInputValue("");
+    // Clear only what was sent: a quick prompt leaves the draft alone, and a
+    // message support couldn't take yet stays in the box to send again.
+    if (sent && overrideText === undefined) setInputValue("");
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  // Esc closes the chat, unless the menu is up — it closes itself first —
+  // and doesn't go on to the page (a sheet under the chat would close too).
+  // Tab stays in the chat while it's open: it's modal, its backdrop covers
+  // the page, and Esc wouldn't work from the page behind it.
+  const handlePanelKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const panel = panelRef.current;
+    if (e.key === "Tab" && panel) {
+      const stops = Array.from(
+        panel.querySelectorAll<HTMLElement>('button, a[href], textarea, input, select, [tabindex]:not([tabindex="-1"])')
+      ).filter(
+        (el) =>
+          !el.closest("[inert]") &&
+          !(el as HTMLButtonElement).disabled &&
+          el.getClientRects().length > 0 &&
+          getComputedStyle(el).visibility !== "hidden"
+      );
+      if (!stops.length) return;
+      const active = (panel.getRootNode() as Document | ShadowRoot).activeElement;
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      if (e.shiftKey && (active === first || active === panel)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+      return;
+    }
+    if (e.key !== "Escape" || e.nativeEvent.isComposing || menuOpen) return;
+    e.stopPropagation();
+    closedByKeyboardRef.current = true;
+    setIsOpen(false);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -1284,42 +1596,73 @@ export const ChatWidget: React.FC = () => {
           tapping anywhere outside the panel closes it on every viewport.
           `touch-none` blocks touch-scroll on the backdrop itself so the host
           page can't scroll when the user drags from outside the panel toward
-          its edge. */}
-      {isOpen && (
-        <div
-          onClick={() => setIsOpen(false)}
-          className={`fixed inset-0 ${Z_BACKDROP} touch-none bg-black/50 backdrop-blur-sm lg:bg-transparent lg:backdrop-blur-none animate-fade-in-up`}
-          aria-hidden="true"
-        />
-      )}
+          its edge. Always mounted, fading in and out with the panel: it used
+          to vanish in one frame on close while the panel was still fading.
+          `invisible` once faded, so it neither paints nor catches taps. */}
+      <div
+        onClick={() => setIsOpen(false)}
+        className={`fixed inset-0 ${Z_BACKDROP} touch-none bg-black/50 backdrop-blur-sm lg:bg-transparent lg:backdrop-blur-none ${
+          isOpen
+            ? "visible opacity-100 transition-opacity duration-300 ease-out"
+            : "invisible opacity-0 pointer-events-none transition-[opacity,visibility] duration-200 ease-in"
+        }`}
+        aria-hidden="true"
+      />
 
-      <div className={`fixed ${LAUNCHER_OFFSET} right-4 md:right-6 ${Z_PANEL_STACK} flex flex-col items-end font-poppins`}>
+      {/* `pointer-events-none` here, `-auto` on whichever child is showing:
+          this box stays the launcher's size, and must not catch the taps
+          meant for the backdrop around it while the panel is open. */}
+      <div className={`fixed ${LAUNCHER_OFFSET} right-4 md:right-6 ${Z_PANEL_STACK} flex flex-col items-end font-poppins pointer-events-none`}>
       {/* Chat Window — kept at its open-target position in both states so the
           transition only animates transform + opacity (which CSS can interpolate
           smoothly). Toggling between `absolute bottom-0 right-0` and `fixed
           inset-2` would snap layout instantly, which produced the "moves down,
-          then opens" jank users reported. */}
+          then opens" jank users reported. Above the launcher (z-10), which
+          fades out underneath it. Closed, it is `invisible` once faded and
+          `inert`, so its controls are out of the Tab order; `visibility` is
+          only transitioned on the way out, so an opening panel is visible —
+          and focusable — at once. While typing on a
+          phone it goes edge to edge (`data-typing`) — a single snap with the
+          keyboard's own resize, nothing animated on top of it. `data-typing`
+          is set by the visual-viewport effect, never by React. */}
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mc-chat-title"
         aria-hidden={!isOpen}
+        inert={!isOpen}
+        tabIndex={-1}
+        onKeyDown={handlePanelKeyDown}
         className={`
-          fixed left-2 right-2 top-[calc(var(--mc-vvtop,0px)+8px)]
+          group/panel fixed z-10
+          left-2 right-2 top-[calc(var(--mc-vvtop,0px)+8px)]
           max-lg:h-[calc(var(--mc-vvh,100dvh)-16px)]
+          data-[typing]:left-0 data-[typing]:right-0 data-[typing]:top-[var(--mc-vvtop,0px)]
+          data-[typing]:max-lg:h-[var(--mc-vvh,100dvh)] data-[typing]:rounded-none data-[typing]:border-transparent
+          data-[typing]:pl-[env(safe-area-inset-left)] data-[typing]:pr-[env(safe-area-inset-right)]
           lg:inset-auto lg:bottom-24 lg:right-6 lg:top-auto
           lg:w-[400px] lg:h-[760px] lg:max-h-[86vh] lg:max-w-[calc(100vw-2rem)]
-          bg-white shadow-floating rounded-2xl border border-gray-200
-          flex flex-col overflow-hidden
-          origin-bottom-right transition-[opacity,transform] duration-300 ease-out
+          bg-white shadow-floating rounded-2xl border border-gray-200 outline-none
+          flex flex-col overflow-hidden origin-bottom-right
           ${
             isOpen
-              ? "opacity-100 scale-100 translate-y-0"
-              : "opacity-0 scale-95 translate-y-4 pointer-events-none"
+              ? "visible opacity-100 scale-100 translate-y-0 pointer-events-auto transition-[opacity,transform] duration-300 ease-out"
+              : "invisible opacity-0 scale-95 translate-y-4 motion-reduce:scale-100 motion-reduce:translate-y-0 pointer-events-none transition-[opacity,transform,visibility] duration-200 ease-in"
           }
         `}
       >
+        <span
+          ref={insetProbeRef}
+          aria-hidden="true"
+          className="absolute w-0 h-0 overflow-hidden invisible pointer-events-none pb-[env(safe-area-inset-bottom)]"
+        />
+
         {/* Main menu drawer — overlays the messages when open. Sits above the
             header z-stack so it visually covers everything. */}
         <MainMenuDrawer
           isOpen={menuOpen}
+          returnFocusRef={menuButtonRef}
           isLoggedIn={isLoggedIn}
           aiAvailable={aiAvailable}
           // Anonymous with the assistant off has neither an AI thread nor a
@@ -1349,9 +1692,9 @@ export const ChatWidget: React.FC = () => {
           }}
         />
 
-        {/* Header */}
-        <div className="bg-white border-b border-gray-100 pt-4 px-4 pb-0 flex flex-col shrink-0">
-          <div className="flex items-center justify-between mb-4">
+        {/* Header — one row while typing (≈56px, as in WhatsApp) */}
+        <div className="bg-white border-b border-gray-100 pt-4 px-4 pb-0 flex flex-col shrink-0 group-data-[typing]/panel:pt-2">
+          <div className="flex items-center justify-between mb-4 group-data-[typing]/panel:mb-2">
             <div className="flex items-center gap-2">
               {/* Until the kill-switch answer is in, the header must not brand
                   itself as the AI assistant — `mode` still defaults to "ai", so
@@ -1368,7 +1711,7 @@ export const ChatWidget: React.FC = () => {
                 )}
               </div>
               <div>
-                <h3 className="font-semibold text-graphite text-[15px] leading-tight">
+                <h3 id="mc-chat-title" className="font-semibold text-graphite text-[15px] leading-tight">
                   {!configResolved
                     ? "Majestic Escape"
                     : effectiveMode === "ai"
@@ -1384,7 +1727,7 @@ export const ChatWidget: React.FC = () => {
                         ? "bg-gray-400"
                         : needsLoginForSupport
                         ? "bg-gray-400"
-                        : effectiveMode === "support" && !support.isConnected
+                        : showConnecting
                         ? "bg-amber-500"
                         : effectiveMode === "support" && support.status === "resolved"
                         ? "bg-gray-400"
@@ -1400,7 +1743,7 @@ export const ChatWidget: React.FC = () => {
                     ? "Sign in to start"
                     : effectiveMode === "ai"
                     ? "Ready to assist"
-                    : !support.isConnected
+                    : showConnecting
                     ? "Connecting…"
                     : support.status === "resolved"
                     ? "Conversation closed"
@@ -1412,6 +1755,7 @@ export const ChatWidget: React.FC = () => {
             </div>
             <div className="flex items-center gap-1">
               <button
+                ref={menuButtonRef}
                 onClick={() => setMenuOpen((o) => !o)}
                 className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-500 hover:text-gray-800"
                 aria-label={menuOpen ? "Close menu" : "Open menu"}
@@ -1420,7 +1764,10 @@ export const ChatWidget: React.FC = () => {
                 <MenuIcon className="w-5 h-5" />
               </button>
             <button
-              onClick={() => setIsOpen(false)}
+              onClick={(e) => {
+                closedByKeyboardRef.current = e.detail === 0; // Enter/Space, not a tap or click
+                setIsOpen(false);
+              }}
               className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-500 hover:text-gray-800"
               aria-label="Close chat"
             >
@@ -1433,9 +1780,12 @@ export const ChatWidget: React.FC = () => {
               have an authenticated identity tied to support requests, and the
               AI tab disappears entirely when ops disable the assistant. When
               only one of the two is available there's nothing to toggle, so the
-              control is dropped rather than rendered with a single option. */}
+              control is dropped rather than rendered with a single option.
+              Folded away while typing — the keyboard leaves too little room —
+              and faded back in when it closes (the animation replays when
+              the row is displayed again). */}
           {showModeTabs && (
-            <div className="flex bg-gray-100 p-1 rounded-lg mb-3">
+            <div className="flex bg-gray-100 p-1 rounded-lg mb-3 motion-safe:animate-fade-in-up group-data-[typing]/panel:hidden">
               {aiAvailable && (
                 <button
                   onClick={() => setMode("ai")}
@@ -1462,7 +1812,7 @@ export const ChatWidget: React.FC = () => {
               )}
             </div>
           )}
-          {!showModeTabs && <div className="mb-3" />}
+          {!showModeTabs && <div className="mb-3 group-data-[typing]/panel:hidden" />}
         </div>
 
         {/* Messages — `overscroll-contain` stops the scroll chain from
@@ -1471,7 +1821,7 @@ export const ChatWidget: React.FC = () => {
             Tagged with a ref so the global touchmove blocker on mobile can
             allow finger-drag scrolling INSIDE this region while preventing it
             anywhere else (header, footer, backdrop, host page beneath). */}
-        <div ref={messagesScrollRef} className="flex-1 overflow-y-auto overscroll-contain p-4 bg-gray-50/50 flex flex-col gap-4 [scrollbar-width:thin] [scrollbar-color:#CBD5E1_transparent]">
+        <div ref={messagesScrollRef} onScroll={onMessagesScroll} className="flex-1 overflow-y-auto overscroll-contain p-4 bg-gray-50/50 flex flex-col gap-4 [scrollbar-width:thin] [scrollbar-color:#CBD5E1_transparent]">
           {/* Nothing about either mode until the kill-switch answer lands.
               `mode` defaults to "ai", so without this gate the AI greeting and
               the "Try asking about:" prompts painted before we knew whether the
@@ -1482,7 +1832,10 @@ export const ChatWidget: React.FC = () => {
             </div>
           )}
 
-          {configResolved && !hasUserMessage && effectiveMode === "ai" && aiAvailable && (
+          {/* The starter prompts wait until the saved conversation has been
+              looked up: a returning visitor's history would replace them a
+              moment later, and the swap flickered on open. */}
+          {configResolved && !hasUserMessage && effectiveMode === "ai" && aiAvailable && aiHistoryReady && (
             <div className="flex flex-col gap-2 mb-2 animate-fade-in-up">
               <p className="text-xs font-medium text-gray-500 ml-1">Try asking about:</p>
               <div className="flex flex-col gap-2">
@@ -1526,7 +1879,19 @@ export const ChatWidget: React.FC = () => {
             </div>
           )}
 
-          {!hasUserMessage && effectiveMode === "support" && !needsLoginForSupport && (
+          {/* Likewise nothing of the support conversation until it has come
+              in — the starter prompts used to show, and even take taps, then
+              vanish under the history. The spinner only fades in if the
+              wait is noticeable (mc-delayed-fade), so a quick join shows none. */}
+          {configResolved && effectiveMode === "support" && supportAvailable && !support.joined && (
+            <div className="flex-1 flex items-center justify-center">
+              <span className="mc-delayed-fade" aria-hidden="true">
+                <Loader2 className="w-5 h-5 animate-spin text-primaryGreen/60" />
+              </span>
+            </div>
+          )}
+
+          {support.joined && !hasUserMessage && effectiveMode === "support" && !needsLoginForSupport && (
             <div className="flex flex-col gap-2 mb-2 animate-fade-in-up">
               <p className="text-xs font-medium text-gray-500 ml-1">How can we help you?</p>
               <div className="flex flex-col gap-2">
@@ -1571,7 +1936,6 @@ export const ChatWidget: React.FC = () => {
               {error}
             </div>
           )}
-          <div ref={messagesEndRef} />
         </div>
 
         {/* Input area — three states for support: open, awaiting-rating, closed.
@@ -1580,7 +1944,7 @@ export const ChatWidget: React.FC = () => {
             and while the kill-switch answer is still pending — otherwise the
             "Ask AI to find stays..." placeholder appears before we know whether
             the assistant is enabled. */}
-        <div className="p-4 bg-white border-t border-gray-100 shrink-0">
+        <div className="p-4 bg-white border-t border-gray-100 shrink-0 group-data-[typing]/panel:py-2">
           {!configResolved || needsLoginForSupport ? null : effectiveMode === "support" &&
             support.awaitingRating ? (
             <RatingPrompt
@@ -1619,9 +1983,8 @@ export const ChatWidget: React.FC = () => {
                 </div>
               )}
               <form onSubmit={(e) => handleSend(e)} className="relative flex items-center">
-                <input
+                <ComposerField
                   ref={inputRef}
-                  type="text"
                   value={inputValue}
                   onChange={(e) => {
                     setInputValue(e.target.value);
@@ -1630,13 +1993,18 @@ export const ChatWidget: React.FC = () => {
                   onKeyDown={handleKeyDown}
                   placeholder={effectiveMode === "ai" ? "Ask AI to find stays..." : "Type your message..."}
                   className="w-full bg-gray-100 border border-transparent text-graphite text-[14px] rounded-full pl-4 pr-12 py-3 focus:outline-none focus:bg-white focus:border-primaryGreen focus:ring-1 focus:ring-primaryGreen transition-all placeholder:text-gray-400 disabled:opacity-60"
-                  disabled={isLoading || (effectiveMode === "support" && !support.isConnected)}
                   maxLength={2000}
                 />
               <button
                 type="submit"
-                disabled={!inputValue.trim() || isLoading || (effectiveMode === "support" && !support.isConnected)}
-                className="absolute right-1.5 p-2 bg-primaryGreen text-white rounded-full hover:bg-brightGreen disabled:opacity-50 transition-colors flex items-center justify-center"
+                // Tapping it must not take focus from the message box: that
+                // closed the phone keyboard after every send. For the same
+                // reason it is never `disabled` — a tap on a disabled button
+                // moves focus without reaching onMouseDown. It only looks and
+                // announces unavailable; handleSend checks canSend.
+                aria-disabled={!inputValue.trim() || !canSend}
+                onMouseDown={(e) => e.preventDefault()}
+                className="absolute right-1.5 p-2 bg-primaryGreen text-white rounded-full hover:bg-brightGreen aria-disabled:opacity-50 aria-disabled:hover:bg-primaryGreen transition duration-150 motion-safe:active:scale-90 aria-disabled:active:scale-100 flex items-center justify-center"
                 aria-label="Send message"
               >
                 {isLoading ? (
@@ -1648,7 +2016,9 @@ export const ChatWidget: React.FC = () => {
             </form>
             </>
           )}
-          <div className="text-center mt-2">
+          {/* Not while typing: the keyboard leaves no room for it. It is
+              there whenever the keyboard is down, and fades back in. */}
+          <div className="text-center mt-2 motion-safe:animate-fade-in-up group-data-[typing]/panel:hidden">
             <span className="text-[10px] text-gray-400 font-medium">
               {/* Neutral until resolved — "AI can make mistakes" is an AI
                   surface too, and it sits below the fold of the same flash. */}
@@ -1667,11 +2037,19 @@ export const ChatWidget: React.FC = () => {
           launcher is wrapped in a sized container so the absolutely-
           positioned halo doesn't shift the bottom-right offset of the panel.
           When the chat is open the launcher fades + scales out (instead of
-          rotating, which looked off with the mascot's face). */}
+          rotating, which looked off with the mascot's face). It fades where
+          it stands, and is `invisible` once faded, so it is no hidden Tab
+          stop while the panel is open. The button transitions transform and
+          shadow only — `transition-all` also eased its inherited visibility,
+          leaving it unfocusable for a moment on close. */}
       <div
         className={`
-          relative w-16 h-16 transition-[opacity,transform] duration-300 ease-out
-          ${isOpen ? "opacity-0 scale-75 pointer-events-none absolute" : "opacity-100 scale-100"}
+          relative w-16 h-16 duration-300 ease-out
+          ${
+            isOpen
+              ? "invisible opacity-0 scale-75 pointer-events-none transition-[opacity,transform,visibility]"
+              : "visible opacity-100 scale-100 pointer-events-auto transition-[opacity,transform]"
+          }
         `}
       >
         {/* Soft pulsing halo — primaryGreen ring fading outward. Pure visual
@@ -1684,6 +2062,7 @@ export const ChatWidget: React.FC = () => {
           />
         )}
         <button
+          ref={launcherRef}
           type="button"
           onClick={() => setIsOpen(!isOpen)}
           className="
@@ -1691,7 +2070,7 @@ export const ChatWidget: React.FC = () => {
             flex items-center justify-center
             bg-gradient-to-br from-white via-white to-lightGreen/40
             ring-2 ring-primaryGreen/20 hover:ring-primaryGreen/50
-            transition-all duration-300 ease-out
+            transition-[transform,box-shadow] duration-300 ease-out
             hover:scale-110 hover:shadow-[0_12px_36px_rgba(54,98,31,0.35)]
             active:scale-95
             focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-primaryGreen/40
