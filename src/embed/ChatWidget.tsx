@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { useChat } from "./useChat";
 import { useSupportChat } from "./useSupportChat";
+import { ComposerField } from "./ComposerField";
 import { Message, ChatMode, PropertyCardData } from "./types";
 
 const aiQuickPrompts = [
@@ -922,7 +923,7 @@ export const ChatWidget: React.FC = () => {
   } = useChat();
   const support = useSupportChat();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
 
   // Which tabs the user may actually see.
@@ -1266,7 +1267,7 @@ export const ChatWidget: React.FC = () => {
     setInputValue("");
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -1619,9 +1620,8 @@ export const ChatWidget: React.FC = () => {
                 </div>
               )}
               <form onSubmit={(e) => handleSend(e)} className="relative flex items-center">
-                <input
+                <ComposerField
                   ref={inputRef}
-                  type="text"
                   value={inputValue}
                   onChange={(e) => {
                     setInputValue(e.target.value);
