@@ -77,6 +77,39 @@ interface ConnContext {
 const ADMINS_ROOM = "admins:online";
 const roomFor = (conversationId: string) => `support:${conversationId}`;
 
+// ─── Untrusted input ────────────────────────────────────────────────────────
+//
+// The handshake `auth` object and every event payload are client JSON. A
+// value declared as a string here can arrive as an object such as
+// {"$ne": null}, which MongoDB reads as an operator: an unchecked guest id
+// in the sign-in claim below would move every guest conversation into the
+// caller's account. Anything that reaches a filter or a broadcast is
+// checked here first.
+const GUEST_ID_RE = /^[A-Za-z0-9_-]{1,100}$/; // the widget sends g_<uuid>
+const OBJECT_ID_RE = /^[0-9a-fA-F]{24}$/;
+const CLIENT_MESSAGE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function parseGuestSessionId(raw: unknown): string | null {
+  return typeof raw === "string" && GUEST_ID_RE.test(raw) ? raw : null;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+type Ack = (r: { ok: boolean; error?: string }) => void;
+
+// Socket.IO hands the handler whatever the client sent last; only a real
+// callback is an acknowledgement.
+function ackOf(raw: unknown): Ack {
+  return typeof raw === "function" ? (raw as Ack) : () => {};
+}
+
+function payloadOf(raw: unknown): Record<string, unknown> {
+  if (!isPlainObject(raw)) throw new Error("invalid payload");
+  return raw;
+}
+
 interface ArchivedMessage {
   _id?: ObjectId;
   conversationId: ObjectId;
@@ -216,6 +249,27 @@ function safeConversationId(raw: unknown): ObjectId {
   return new ObjectId(raw);
 }
 
+// The conversation filter for the socket's own identity, or null when it has
+// none. Never build one from a missing identity: {guestSessionId: null}
+// would match every signed-in customer's conversation.
+function ownerFilterOf(
+  ctx: ConnContext
+): { userId: ObjectId } | { guestSessionId: string } | null {
+  const userId = safeUserIdFromJwt(ctx.jwt);
+  if (userId) return { userId };
+  if (ctx.guestSessionId) return { guestSessionId: ctx.guestSessionId };
+  return null;
+}
+
+function ownsConversation(
+  ctx: ConnContext,
+  chat: { userId: ObjectId | null; guestSessionId: string | null }
+): boolean {
+  const userId = safeUserIdFromJwt(ctx.jwt);
+  if (userId) return !!chat.userId && chat.userId.equals(userId);
+  return !!ctx.guestSessionId && chat.guestSessionId === ctx.guestSessionId;
+}
+
 function nameFromJwt(jwt: AppJwtPayload | null, fallback = "Agent"): string {
   const fn = jwt?.firstName;
   if (typeof fn === "string" && fn.trim()) return fn.trim();
@@ -236,13 +290,17 @@ export function mountSupportNamespace(io: IOServer): void {
   const ns = io.of("/support");
 
   ns.use(async (socket, next) => {
-    const auth = socket.handshake.auth || {};
-    const jwt = verifyToken(auth.token as string | undefined);
-    const guestSessionId = (auth.guestSessionId as string | undefined) ?? null;
-    if (!jwt && !guestSessionId) {
+    const auth = isPlainObject(socket.handshake.auth) ? socket.handshake.auth : {};
+    const verified = verifyToken(typeof auth.token === "string" ? auth.token : undefined);
+    const guestSessionId = parseGuestSessionId(auth.guestSessionId);
+    const isAdmin = await resolveIsAdmin(verified);
+    // A customer's token must name a real user id. One that doesn't is
+    // dropped (verifyToken only proves the signature), so the socket is a
+    // guest with a valid guest id, or nobody — and nobody is refused.
+    const jwt = isAdmin || safeUserIdFromJwt(verified) ? verified : null;
+    if (!isAdmin && !jwt && !guestSessionId) {
       return next(new Error("auth required: provide JWT token or guestSessionId"));
     }
-    const isAdmin = await resolveIsAdmin(jwt);
     const ctx: ConnContext = { jwt, isAdmin, guestSessionId };
     (socket.data as { ctx: ConnContext }).ctx = ctx;
     next();
@@ -266,17 +324,18 @@ export function mountSupportNamespace(io: IOServer): void {
       else await onUserConnect(socket);
     });
 
-    socket.on("support:message", async (payload, ack) => {
+    socket.on("support:message", async (payload: unknown, ack: unknown) => {
+      const reply = ackOf(ack);
       try {
         await handleIncomingMessage(socket, payload);
-        ack?.({ ok: true });
+        reply({ ok: true });
       } catch (err) {
         console.error("[support] message error", err);
-        ack?.({ ok: false, error: (err as Error).message });
+        reply({ ok: false, error: (err as Error).message });
       }
     });
 
-    socket.on("support:read", async (payload) => {
+    socket.on("support:read", async (payload: unknown) => {
       try {
         await handleRead(socket, payload);
       } catch (err) {
@@ -284,81 +343,88 @@ export function mountSupportNamespace(io: IOServer): void {
       }
     });
 
-    socket.on("support:typing", async (payload: { conversationId: string; isTyping: boolean }) => {
+    socket.on("support:typing", async (payload: unknown) => {
       // Authz: verify the sender is part of this conversation before
       // broadcasting their typing state. Without this, a curious admin
       // could blast "typing…" at any conversation room. Admins are
       // implicitly trusted across all rooms, so they short-circuit.
       try {
+        if (!isPlainObject(payload)) return;
+        const conversationId = safeConversationId(payload.conversationId);
         if (!ctx.isAdmin) {
-          const conversationId = safeConversationId(payload.conversationId);
+          const owner = ownerFilterOf(ctx);
+          if (!owner) return;
           const { chats } = await getCollections();
-          const userId = safeUserIdFromJwt(ctx.jwt);
-          const ownerFilter = userId
-            ? { _id: conversationId, userId }
-            : { _id: conversationId, guestSessionId: ctx.guestSessionId };
-          const owns = await chats.findOne(ownerFilter, { projection: { _id: 1 } });
+          const owns = await chats.findOne(
+            { _id: conversationId, ...owner },
+            { projection: { _id: 1 } }
+          );
           if (!owns) return;
         }
-        socket.to(roomFor(payload.conversationId)).emit("support:typing", {
-          conversationId: payload.conversationId,
+        const id = String(conversationId);
+        socket.to(roomFor(id)).emit("support:typing", {
+          conversationId: id,
           from: ctx.isAdmin ? "admin" : "user",
-          isTyping: payload.isTyping,
+          isTyping: payload.isTyping === true,
         });
       } catch (err) {
         console.warn("[support] typing authz check failed:", err);
       }
     });
 
-    socket.on("support:assign", async (payload: { conversationId: string }, ack?: (r: { ok: boolean; error?: string }) => void) => {
+    socket.on("support:assign", async (payload: unknown, ack: unknown) => {
+      const reply = ackOf(ack);
       if (!ctx.isAdmin) {
-        ack?.({ ok: false, error: "admin only" });
+        reply({ ok: false, error: "admin only" });
         return;
       }
       try {
         await handleAssign(ns, socket, payload);
-        ack?.({ ok: true });
+        reply({ ok: true });
       } catch (err) {
         console.error("[support] assign error", err);
-        ack?.({ ok: false, error: (err as Error).message });
+        reply({ ok: false, error: (err as Error).message });
       }
     });
 
-    socket.on("support:resolve", async (payload: { conversationId: string }, ack?: (r: { ok: boolean; error?: string }) => void) => {
+    socket.on("support:resolve", async (payload: unknown, ack: unknown) => {
+      const reply = ackOf(ack);
       if (!ctx.isAdmin) {
-        ack?.({ ok: false, error: "admin only" });
+        reply({ ok: false, error: "admin only" });
         return;
       }
       try {
         await handleResolve(ns, socket, payload);
-        ack?.({ ok: true });
+        reply({ ok: true });
       } catch (err) {
         console.error("[support] resolve error", err);
-        ack?.({ ok: false, error: (err as Error).message });
+        reply({ ok: false, error: (err as Error).message });
       }
     });
 
-    socket.on("support:reopen", async (payload: { conversationId: string }, ack?: (r: { ok: boolean; error?: string }) => void) => {
+    socket.on("support:reopen", async (payload: unknown, ack: unknown) => {
+      const reply = ackOf(ack);
       if (!ctx.isAdmin) {
-        ack?.({ ok: false, error: "admin only" });
+        reply({ ok: false, error: "admin only" });
         return;
       }
       try {
         await handleReopen(ns, socket, payload);
-        ack?.({ ok: true });
+        reply({ ok: true });
       } catch (err) {
         console.error("[support] reopen error", err);
-        ack?.({ ok: false, error: (err as Error).message });
+        reply({ ok: false, error: (err as Error).message });
       }
     });
 
-    socket.on("support:rate", async (payload: { conversationId: string; stars: number; comment?: string }, ack?: (r: { ok: boolean; error?: string }) => void) => {
+    socket.on("support:rate", async (payload: unknown, ack: unknown) => {
+      const reply = ackOf(ack);
       try {
         await handleRate(ns, socket, payload);
-        ack?.({ ok: true });
+        reply({ ok: true });
       } catch (err) {
         console.error("[support] rate error", err);
-        ack?.({ ok: false, error: (err as Error).message });
+        reply({ ok: false, error: (err as Error).message });
       }
     });
 
@@ -367,22 +433,16 @@ export function mountSupportNamespace(io: IOServer): void {
     // conversation, and by user clients that want to backfill older messages.
     // For compliance, every message ever sent is preserved and returned here —
     // including those evicted from `messages[]` once it reached the 500 cap.
-    socket.on("support:fetch-history", async (
-      payload: { conversationId: string },
-      ack?: (r: { ok: boolean; error?: string }) => void
-    ) => {
+    socket.on("support:fetch-history", async (payload: unknown, ack: unknown) => {
+      const reply = ackOf(ack);
       try {
-        const conversationId = safeConversationId(payload.conversationId);
+        const conversationId = safeConversationId(payloadOf(payload).conversationId);
         const { chats, archive } = await getCollections();
         const chat = await chats.findOne({ _id: conversationId });
         if (!chat) throw new Error("conversation not found");
 
         // Authorisation: admin OR the conversation's owner (logged-in or guest).
-        const authorId = safeUserIdFromJwt(ctx.jwt);
-        const isAdmin = ctx.isAdmin;
-        const ownsByUser = !!(authorId && chat.userId && chat.userId.equals(authorId));
-        const ownsByGuest = !authorId && !!chat.guestSessionId && chat.guestSessionId === ctx.guestSessionId;
-        if (!isAdmin && !ownsByUser && !ownsByGuest) {
+        if (!ctx.isAdmin && !ownsConversation(ctx, chat)) {
           throw new Error("forbidden");
         }
 
@@ -413,39 +473,40 @@ export function mountSupportNamespace(io: IOServer): void {
         );
 
         socket.emit("support:history", {
-          conversationId: payload.conversationId,
+          conversationId: String(conversationId),
           messages: all,
         });
-        ack?.({ ok: true });
+        reply({ ok: true });
       } catch (err) {
         console.error("[support] fetch-history error", err);
-        ack?.({ ok: false, error: (err as Error).message });
+        reply({ ok: false, error: (err as Error).message });
       }
     });
 
-    socket.on(
-      "support:rating-dismissed",
-      async (
-        payload: { conversationId: string },
-        ack?: (r: { ok: boolean; error?: string }) => void
-      ) => {
-        try {
-          const { chats } = await getCollections();
-          await chats.updateOne(
-            { _id: safeConversationId(payload.conversationId) },
-            { $set: { ratingDismissedAt: new Date() } }
-          );
-          // Ack so the client can sequence: dismiss → wait for ack → start
-          // a new conversation. Without this, support:start can race past
-          // the dismiss write and the server's onUserConnect re-finds the
-          // unrated-resolved convo, replaying the rating prompt.
-          ack?.({ ok: true });
-        } catch (err) {
-          console.error("[support] rating-dismissed error", err);
-          ack?.({ ok: false, error: (err as Error).message });
-        }
+    socket.on("support:rating-dismissed", async (payload: unknown, ack: unknown) => {
+      const reply = ackOf(ack);
+      try {
+        // Only the customer who was asked for the rating can skip it; the
+        // ownership condition sits in the write itself.
+        const owner = ctx.isAdmin ? null : ownerFilterOf(ctx);
+        if (!owner) throw new Error("not your conversation");
+        const conversationId = safeConversationId(payloadOf(payload).conversationId);
+        const { chats } = await getCollections();
+        const result = await chats.updateOne(
+          { _id: conversationId, ...owner },
+          { $set: { ratingDismissedAt: new Date() } }
+        );
+        if (result.matchedCount === 0) throw new Error("not your conversation");
+        // Ack so the client can sequence: dismiss → wait for ack → start
+        // a new conversation. Without this, support:start can race past
+        // the dismiss write and the server's onUserConnect re-finds the
+        // unrated-resolved convo, replaying the rating prompt.
+        reply({ ok: true });
+      } catch (err) {
+        console.error("[support] rating-dismissed error", err);
+        reply({ ok: false, error: (err as Error).message });
       }
-    );
+    });
 
     socket.on("disconnect", () => {
       // Rooms are cleaned up by Socket.IO automatically.
@@ -494,9 +555,11 @@ async function onUserConnect(socket: Socket): Promise<void> {
     }
   }
 
-  const baseFilter = userId
-    ? { userId }
-    : { guestSessionId: ctx.guestSessionId };
+  const baseFilter = ownerFilterOf(ctx);
+  if (!baseFilter) {
+    socket.emit("support:error", { reason: "Sign in to chat with support." });
+    return;
+  }
 
   // Look for an active (non-resolved) conversation first.
   let chat = await chats.findOne({ ...baseFilter, status: { $ne: "resolved" as const } });
@@ -614,25 +677,23 @@ async function onAdminConnect(socket: Socket): Promise<void> {
 
 // ─── Message ─────────────────────────────────────────────────────────────────
 
-async function handleIncomingMessage(
-  socket: Socket,
-  payload: { conversationId: string; text: string; clientMessageId?: string }
-): Promise<void> {
+async function handleIncomingMessage(socket: Socket, payload: unknown): Promise<void> {
   const { ctx } = socket.data as { ctx: ConnContext };
+  const body = payloadOf(payload);
 
-  const v = validateUserMessage(payload.text);
+  const v = validateUserMessage(body.text);
   if (!v.ok) throw new Error(v.reason ?? "invalid message");
-  const text = sanitizeText((payload.text as string).trim());
+  const text = sanitizeText((body.text as string).trim());
   if (!text) throw new Error("Message is empty");
 
-  // clientMessageId must be a short string if provided — block NoSQL operator
-  // injection via this field.
+  // clientMessageId must be a short token if provided — it is stored and
+  // matched on, so block operator injection and oversized values.
   let clientMessageId: string | undefined = undefined;
-  if (payload.clientMessageId !== undefined && payload.clientMessageId !== null) {
-    if (typeof payload.clientMessageId !== "string" || payload.clientMessageId.length > 64) {
+  if (body.clientMessageId !== undefined && body.clientMessageId !== null) {
+    if (typeof body.clientMessageId !== "string" || !CLIENT_MESSAGE_ID_RE.test(body.clientMessageId)) {
       throw new Error("invalid clientMessageId");
     }
-    clientMessageId = payload.clientMessageId;
+    clientMessageId = body.clientMessageId;
   }
 
   const authorId = safeUserIdFromJwt(ctx.jwt);
@@ -647,19 +708,17 @@ async function handleIncomingMessage(
     throw new Error("rate limit exceeded — try again in a moment");
   }
 
-  const conversationId = safeConversationId(payload.conversationId);
+  const conversationId = safeConversationId(body.conversationId);
+  const id = String(conversationId);
   const { chats } = await getCollections();
 
-  // Fetch the chat once; verify ownership AND status atomically.
   const chat = await chats.findOne({ _id: conversationId });
   if (!chat) throw new Error("conversation not found");
   if (chat.status === "resolved") {
     throw new Error("conversation closed — admin must reopen first");
   }
-  if (!ctx.isAdmin) {
-    const ownsByUser = authorId && chat.userId && chat.userId.equals(authorId);
-    const ownsByGuest = !authorId && chat.guestSessionId === ctx.guestSessionId;
-    if (!ownsByUser && !ownsByGuest) throw new Error("not your conversation");
+  if (!ctx.isAdmin && !ownsConversation(ctx, chat)) {
+    throw new Error("not your conversation");
   }
 
   // Idempotency on clientMessageId — if a message with the same id already exists, no-op.
@@ -697,12 +756,12 @@ async function handleIncomingMessage(
     );
   }
 
-  socket.nsp.to(roomFor(payload.conversationId)).emit("support:message", {
-    conversationId: payload.conversationId,
+  socket.nsp.to(roomFor(id)).emit("support:message", {
+    conversationId: id,
     message,
   });
   socket.nsp.to(ADMINS_ROOM).emit("support:conversation-updated", {
-    conversationId: payload.conversationId,
+    conversationId: id,
     lastMessage: message,
   });
 
@@ -776,12 +835,12 @@ async function handleIncomingMessage(
           console.warn("[support] auto-ack archive insert failed:", err);
         }
       }
-      socket.nsp.to(roomFor(payload.conversationId)).emit("support:message", {
-        conversationId: payload.conversationId,
+      socket.nsp.to(roomFor(id)).emit("support:message", {
+        conversationId: id,
         message: autoMsg,
       });
       socket.nsp.to(ADMINS_ROOM).emit("support:conversation-updated", {
-        conversationId: payload.conversationId,
+        conversationId: id,
         lastMessage: autoMsg,
       });
     }
@@ -793,14 +852,15 @@ async function handleIncomingMessage(
 async function handleAssign(
   ns: IOServer["of"] extends (n: string) => infer R ? R : never,
   socket: Socket,
-  payload: { conversationId: string }
+  payload: unknown
 ): Promise<void> {
   const { ctx } = socket.data as { ctx: ConnContext };
   const adminId = safeUserIdFromJwt(ctx.jwt);
   if (!adminId) throw new Error("admin id missing in jwt");
   const adminName = nameFromJwt(ctx.jwt);
 
-  const conversationId = safeConversationId(payload.conversationId);
+  const conversationId = safeConversationId(payloadOf(payload).conversationId);
+  const id = String(conversationId);
   const { chats } = await getCollections();
   const chat = await chats.findOne({ _id: conversationId });
   if (!chat) throw new Error("conversation not found");
@@ -813,7 +873,7 @@ async function handleAssign(
 
   // Same admin — make sure they're in the room and exit early.
   if (previousAdminId && previousAdminId.equals(adminId)) {
-    socket.join(roomFor(payload.conversationId));
+    socket.join(roomFor(id));
     return;
   }
 
@@ -851,20 +911,20 @@ async function handleAssign(
   );
   await appendMessageWithArchive(conversationId, systemMessage, { assignmentEntry });
 
-  socket.join(roomFor(payload.conversationId));
+  socket.join(roomFor(id));
 
-  ns.to(roomFor(payload.conversationId)).emit("support:status", {
-    conversationId: payload.conversationId,
+  ns.to(roomFor(id)).emit("support:status", {
+    conversationId: id,
     status: "open",
     assignedAdminId: String(adminId),
     assignedAdminName: adminName,
   });
-  ns.to(roomFor(payload.conversationId)).emit("support:message", {
-    conversationId: payload.conversationId,
+  ns.to(roomFor(id)).emit("support:message", {
+    conversationId: id,
     message: systemMessage,
   });
   ns.to(ADMINS_ROOM).emit("support:conversation-updated", {
-    conversationId: payload.conversationId,
+    conversationId: id,
     lastMessage: systemMessage,
     assignedAdminId: String(adminId),
     assignedAdminName: adminName,
@@ -887,12 +947,13 @@ async function handleAssign(
 async function handleResolve(
   ns: ReturnType<IOServer["of"]>,
   socket: Socket,
-  payload: { conversationId: string }
+  payload: unknown
 ): Promise<void> {
   const { ctx } = socket.data as { ctx: ConnContext };
   const adminId = safeUserIdFromJwt(ctx.jwt);
   const adminName = nameFromJwt(ctx.jwt);
-  const conversationId = safeConversationId(payload.conversationId);
+  const conversationId = safeConversationId(payloadOf(payload).conversationId);
+  const id = String(conversationId);
   const { chats } = await getCollections();
   const chat = await chats.findOne({ _id: conversationId });
   if (!chat) throw new Error("conversation not found");
@@ -922,17 +983,17 @@ async function handleResolve(
   );
   await appendMessageWithArchive(conversationId, systemMessage);
 
-  ns.to(roomFor(payload.conversationId)).emit("support:status", {
-    conversationId: payload.conversationId,
+  ns.to(roomFor(id)).emit("support:status", {
+    conversationId: id,
     status: "resolved",
     resolvedAt: now,
   });
-  ns.to(roomFor(payload.conversationId)).emit("support:message", {
-    conversationId: payload.conversationId,
+  ns.to(roomFor(id)).emit("support:message", {
+    conversationId: id,
     message: systemMessage,
   });
   ns.to(ADMINS_ROOM).emit("support:conversation-updated", {
-    conversationId: payload.conversationId,
+    conversationId: id,
     lastMessage: systemMessage,
     status: "resolved",
   });
@@ -950,12 +1011,13 @@ async function handleResolve(
 async function handleReopen(
   ns: ReturnType<IOServer["of"]>,
   socket: Socket,
-  payload: { conversationId: string }
+  payload: unknown
 ): Promise<void> {
   const { ctx } = socket.data as { ctx: ConnContext };
   const adminId = safeUserIdFromJwt(ctx.jwt);
   const adminName = nameFromJwt(ctx.jwt);
-  const conversationId = safeConversationId(payload.conversationId);
+  const conversationId = safeConversationId(payloadOf(payload).conversationId);
+  const id = String(conversationId);
   const { chats } = await getCollections();
   const chat = await chats.findOne({ _id: conversationId });
   if (!chat) throw new Error("conversation not found");
@@ -989,20 +1051,20 @@ async function handleReopen(
     assignmentEntry: { adminId: adminId!, adminName, joinedAt: now },
   });
 
-  socket.join(roomFor(payload.conversationId));
+  socket.join(roomFor(id));
 
-  ns.to(roomFor(payload.conversationId)).emit("support:status", {
-    conversationId: payload.conversationId,
+  ns.to(roomFor(id)).emit("support:status", {
+    conversationId: id,
     status: "open",
     assignedAdminId: adminId ? String(adminId) : null,
     assignedAdminName: adminName,
   });
-  ns.to(roomFor(payload.conversationId)).emit("support:message", {
-    conversationId: payload.conversationId,
+  ns.to(roomFor(id)).emit("support:message", {
+    conversationId: id,
     message: systemMessage,
   });
   ns.to(ADMINS_ROOM).emit("support:conversation-updated", {
-    conversationId: payload.conversationId,
+    conversationId: id,
     lastMessage: systemMessage,
     status: "open",
     assignedAdminId: adminId ? String(adminId) : null,
@@ -1022,38 +1084,39 @@ async function handleReopen(
 async function handleRate(
   ns: ReturnType<IOServer["of"]>,
   socket: Socket,
-  payload: { conversationId: string; stars: number; comment?: string }
+  payload: unknown
 ): Promise<void> {
   const { ctx } = socket.data as { ctx: ConnContext };
   if (ctx.isAdmin) throw new Error("only the user can rate");
-  const stars = Math.round(Number(payload.stars));
-  if (!Number.isFinite(stars) || stars < 1 || stars > 5) {
+  const body = payloadOf(payload);
+  const stars = typeof body.stars === "number" || typeof body.stars === "string" ? Number(body.stars) : NaN;
+  if (!Number.isInteger(stars) || stars < 1 || stars > 5) {
     throw new Error("stars must be 1..5");
   }
-  const comment = (payload.comment ?? "").trim().slice(0, RATING_COMMENT_MAX) || null;
+  if (body.comment != null && typeof body.comment !== "string") throw new Error("invalid comment");
+  const comment = (typeof body.comment === "string" ? body.comment : "").trim().slice(0, RATING_COMMENT_MAX) || null;
 
   const authorId = safeUserIdFromJwt(ctx.jwt);
-  const conversationId = safeConversationId(payload.conversationId);
+  const conversationId = safeConversationId(body.conversationId);
+  const id = String(conversationId);
   const { chats } = await getCollections();
   const chat = await chats.findOne({ _id: conversationId });
   if (!chat) throw new Error("conversation not found");
 
   // User must own this conversation.
-  const ownsByUser = authorId && chat.userId && chat.userId.equals(authorId);
-  const ownsByGuest = !authorId && chat.guestSessionId === ctx.guestSessionId;
-  if (!ownsByUser && !ownsByGuest) throw new Error("not your conversation");
+  if (!ownsConversation(ctx, chat)) throw new Error("not your conversation");
 
   if (chat.status !== "resolved") throw new Error("only resolved conversations can be rated");
 
   const rating: SupportRating = { stars, comment, ratedAt: new Date() };
   await chats.updateOne({ _id: conversationId }, { $set: { rating, updatedAt: new Date() } });
 
-  ns.to(roomFor(payload.conversationId)).emit("support:rated", {
-    conversationId: payload.conversationId,
+  ns.to(roomFor(id)).emit("support:rated", {
+    conversationId: id,
     rating,
   });
   ns.to(ADMINS_ROOM).emit("support:conversation-updated", {
-    conversationId: payload.conversationId,
+    conversationId: id,
     rating,
   });
 
@@ -1070,21 +1133,33 @@ async function handleRate(
 
 async function handleRead(
   socket: Socket,
-  payload: { conversationId: string; lastMessageId?: string }
+  payload: unknown
 ): Promise<void> {
   const { ctx } = socket.data as { ctx: ConnContext };
-  const { chats } = await getCollections();
-  const conversationId = safeConversationId(payload.conversationId);
+  const body = payloadOf(payload);
+  const conversationId = safeConversationId(body.conversationId);
+  const id = String(conversationId);
+  const lastMessageId =
+    typeof body.lastMessageId === "string" && OBJECT_ID_RE.test(body.lastMessageId)
+      ? body.lastMessageId
+      : undefined;
   const role: "user" | "admin" = ctx.isAdmin ? "admin" : "user";
 
-  await chats.updateOne(
-    { _id: conversationId },
-    { $set: { [`unreadCounts.${role}`]: 0 } }
-  );
+  // Customers can only mark their own conversation read; the ownership
+  // condition sits in the write itself.
+  let filter: Record<string, unknown> = { _id: conversationId };
+  if (!ctx.isAdmin) {
+    const owner = ownerFilterOf(ctx);
+    if (!owner) return;
+    filter = { _id: conversationId, ...owner };
+  }
+  const { chats } = await getCollections();
+  const result = await chats.updateOne(filter, { $set: { [`unreadCounts.${role}`]: 0 } });
+  if (result.matchedCount === 0) return;
 
-  socket.to(roomFor(payload.conversationId)).emit("support:read-update", {
-    conversationId: payload.conversationId,
+  socket.to(roomFor(id)).emit("support:read-update", {
+    conversationId: id,
     by: role,
-    lastMessageId: payload.lastMessageId,
+    lastMessageId,
   });
 }
