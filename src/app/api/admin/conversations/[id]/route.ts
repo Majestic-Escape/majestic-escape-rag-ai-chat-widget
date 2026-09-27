@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
-import clientPromise from "@/lib/mongodb";
+import clientPromise, { appDbName } from "@/lib/mongodb";
 import { verifyToken, resolveIsAdmin } from "@/lib/jwt";
+import { adminStanding } from "@/lib/supportNames";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,13 +39,18 @@ export async function DELETE(
 
   const conversationId = new ObjectId(id);
   const adminId = safeUserIdFromJwt(payload);
-  const adminName =
-    typeof payload?.firstName === "string" ? payload.firstName.trim() : null;
 
   const client = await clientPromise;
-  const uri = process.env.MONGODB_URI || "";
-  const dbName = uri.split("/").pop()?.split("?")[0] || "master-db";
-  const db = client.db(dbName);
+  const db = client.db(appDbName());
+
+  // The record, not the 7-day token: a banned or demoted admin is refused,
+  // and the audit names the admin as they are named now.
+  const standing = adminId ? await adminStanding(db, adminId) : null;
+  if (standing?.known && !standing.allowed) {
+    return NextResponse.json({ error: "admin only" }, { status: 401 });
+  }
+  const adminName =
+    standing?.name?.first ?? (typeof payload?.firstName === "string" ? payload.firstName.trim() : null);
 
   const chats = db.collection("support_chats");
   const archive = db.collection("support_chats_archive");

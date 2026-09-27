@@ -62,3 +62,11 @@ const clientPromise = {
 } as unknown as Promise<MongoClient>;
 
 export default clientPromise;
+
+// The database this service shares with server.me (support_chats, users,
+// admins, listingproperties…): the path of MONGODB_URI, "master-db" when it
+// names none — the derivation the routes have always used. Read lazily.
+export function appDbName(): string {
+  const uri = process.env.MONGODB_URI || "";
+  return uri.split("/").pop()?.split("?")[0] || "master-db";
+}

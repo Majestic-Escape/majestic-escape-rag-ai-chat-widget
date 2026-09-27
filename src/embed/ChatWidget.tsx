@@ -26,7 +26,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { useChat } from "./useChat";
-import { useSupportChat } from "./useSupportChat";
+import { useSupportChat, RetryResult } from "./useSupportChat";
 import { ComposerField } from "./ComposerField";
 import { Message, ChatMode, PropertyCardData } from "./types";
 
@@ -398,7 +398,82 @@ const RatingPrompt: React.FC<{
 
 // ─── Message Bubble ─────────────────────────────────────────────────────────────
 
-const MessageBubble: React.FC<{ message: Message }> = ({ message }) => {
+// Under a Support message the server hasn't confirmed: "Not sent" (refused —
+// not stored) or "Delivery not confirmed" (no answer — it may be stored), with
+// Retry and Remove. A retry the server can no longer deduplicate asks first.
+// Nothing shows while a message is simply on its way.
+const DeliveryStatus: React.FC<{
+  message: Message;
+  onRetry: (id: string, confirmed?: boolean) => RetryResult;
+  onRemove: (id: string) => void;
+}> = ({ message, onRetry, onRemove }) => {
+  const [confirming, setConfirming] = useState(false);
+  const sendAgainRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (confirming) sendAgainRef.current?.focus({ preventScroll: true });
+  }, [confirming]);
+  useEffect(() => {
+    if (message.deliveryState === "sending") setConfirming(false);
+  }, [message.deliveryState]);
+
+  if (message.deliveryState !== "failed" && message.deliveryState !== "unconfirmed") return null;
+  const action =
+    "min-h-6 px-1.5 -mx-0.5 rounded font-semibold text-graphite underline underline-offset-2 hover:text-primaryGreen focus-visible:outline focus-visible:outline-2 focus-visible:outline-primaryGreen";
+
+  if (confirming) {
+    return (
+      <div role="group" aria-label="Send again?" className="mt-1 max-w-[80%] text-right text-[11px] text-stone leading-snug">
+        <p>This may already have been delivered. Send it again?</p>
+        <div className="flex justify-end gap-2">
+          <button
+            ref={sendAgainRef}
+            type="button"
+            className={action}
+            onClick={() => {
+              setConfirming(false);
+              onRetry(message.id, true);
+            }}
+          >
+            Send again
+          </button>
+          <button type="button" className={action} onClick={() => setConfirming(false)}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const failed = message.deliveryState === "failed";
+  return (
+    <div className="mt-1 max-w-[80%] flex flex-wrap items-center justify-end gap-x-1 text-[11px] leading-snug">
+      <span role="status" className={failed ? "text-red-600" : "text-stone"}>
+        {failed ? `Not sent${message.failureReason ? ` — ${message.failureReason}` : ""}` : "Delivery not confirmed"}
+      </span>
+      <span aria-hidden="true" className="text-stone">·</span>
+      <button
+        type="button"
+        className={action}
+        aria-label={failed ? "Retry sending this message" : "Retry this message"}
+        onClick={() => {
+          if (onRetry(message.id) === "confirm") setConfirming(true);
+        }}
+      >
+        Retry
+      </button>
+      <span aria-hidden="true" className="text-stone">·</span>
+      <button type="button" className={action} aria-label="Remove this message" onClick={() => onRemove(message.id)}>
+        Remove
+      </button>
+    </div>
+  );
+};
+
+const MessageBubble: React.FC<{
+  message: Message;
+  onRetry?: (id: string, confirmed?: boolean) => RetryResult;
+  onRemove?: (id: string) => void;
+}> = ({ message, onRetry, onRemove }) => {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
 
@@ -468,6 +543,10 @@ const MessageBubble: React.FC<{ message: Message }> = ({ message }) => {
           </div>
         </div>
       </div>
+
+      {isUser && message.deliveryState && onRetry && onRemove && (
+        <DeliveryStatus message={message} onRetry={onRetry} onRemove={onRemove} />
+      )}
 
       {/* Suggested stays — horizontal snap carousel of portrait cards. */}
       {!isUser && message.properties && message.properties.length > 0 && (
@@ -616,8 +695,12 @@ interface MainMenuDrawerProps {
    * assistant off, where the panel is just a sign-in prompt. "Start fresh"
    * there is a dead control: it opens a confirmation, and confirming does
    * nothing visible because there is no AI thread and no support socket.
+   * Also false in Support before the customer has written anything — a
+   * greeting is all there is to clear.
    */
   canStartFresh: boolean;
+  /** Support messages still waiting for the server; clearing drops them. */
+  pendingCount: number;
   mode: ChatMode;
   onClose: () => void;
   onPrompt: (text: string) => void;
@@ -632,6 +715,7 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
   isLoggedIn,
   aiAvailable,
   canStartFresh,
+  pendingCount,
   mode,
   onClose,
   onPrompt,
@@ -815,6 +899,13 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
                 ? "Your support history will still be saved on the server. This only clears the visible thread."
                 : "Your AI history is saved on the server — reload anytime to bring it back."}
             </p>
+            {mode === "support" && pendingCount > 0 && (
+              <p className="text-[12px] font-medium text-red-600 leading-relaxed -mt-2 mb-4">
+                {pendingCount === 1
+                  ? "1 message hasn't reached support yet and will be discarded."
+                  : `${pendingCount} messages haven't reached support yet and will be discarded.`}
+              </p>
+            )}
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -987,7 +1078,19 @@ export const ChatWidget: React.FC = () => {
     aiHistoryReady,
     forgetAi,
   } = useChat();
-  const support = useSupportChat();
+  // What a refused Support message may go back into: the message box, when
+  // the Support tab is showing and the box is empty — never over something
+  // new being typed, never into the assistant's box. Read when the refusal
+  // arrives, so it's a ref kept current by the render.
+  const composerForRestoreRef = useRef({ empty: true, support: false });
+  const support = useSupportChat({
+    restoreToComposer: (text) => {
+      const composer = composerForRestoreRef.current;
+      if (!composer.support || !composer.empty) return false;
+      setInputValue(text);
+      return true;
+    },
+  });
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -1041,6 +1144,7 @@ export const ChatWidget: React.FC = () => {
   const isLoading = effectiveMode === "ai" ? aiLoading : support.isLoading;
   const error = effectiveMode === "ai" ? aiError : support.error;
   const hasUserMessage = messages.some((m) => m.role === "user");
+  composerForRestoreRef.current = { empty: !inputValue.trim(), support: effectiveMode === "support" };
 
   // Keep the end of the conversation in view. `fromBottom` is how far the
   // reader is from the end: 0 while following along, more once they scroll up
@@ -1670,7 +1774,8 @@ export const ChatWidget: React.FC = () => {
           aiAvailable={aiAvailable}
           // Anonymous with the assistant off has neither an AI thread nor a
           // support socket, so there is genuinely nothing to reset.
-          canStartFresh={!needsLoginForSupport}
+          canStartFresh={!needsLoginForSupport && (effectiveMode !== "support" || hasUserMessage)}
+          pendingCount={support.pendingCount}
           mode={mode}
           onClose={() => setMenuOpen(false)}
           onPrompt={(text) => {
@@ -1918,9 +2023,22 @@ export const ChatWidget: React.FC = () => {
             // Without this filter the user sees an empty bubble with only a
             // timestamp while waiting for the model to start streaming.
             .filter((msg) => !(msg.role === "model" && !msg.text?.trim()))
-            .map((msg) => (
-              <MessageBubble key={msg.id} message={msg} />
-            ))}
+            .map((msg) =>
+              effectiveMode === "support" ? (
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  onRetry={support.retryMessage}
+                  onRemove={(id) => {
+                    support.removeMessage(id);
+                    // The button goes with the bubble; keep focus in the chat.
+                    inputRef.current?.focus({ preventScroll: true });
+                  }}
+                />
+              ) : (
+                <MessageBubble key={msg.id} message={msg} />
+              )
+            )}
 
           {isLoading && (
             <div className="flex justify-start animate-fade-in-up">

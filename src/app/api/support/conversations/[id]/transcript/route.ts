@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
-import clientPromise from "@/lib/mongodb";
+import clientPromise, { appDbName } from "@/lib/mongodb";
 import { verifyToken, resolveIsAdmin } from "@/lib/jwt";
+import { adminStanding, lookupUserNames, personName } from "@/lib/supportNames";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,12 +49,16 @@ export async function GET(
       : typeof jwt?.id === "string"
       ? jwt.id
       : null;
-  const isAdmin = await resolveIsAdmin(jwt);
+  let isAdmin = await resolveIsAdmin(jwt);
 
   const client = await clientPromise;
-  const uri = process.env.MONGODB_URI || "";
-  const dbName = uri.split("/").pop()?.split("?")[0] || "master-db";
-  const db = client.db(dbName);
+  const db = client.db(appDbName());
+
+  // An admin token outlives a ban or demotion (7 days); the record decides.
+  if (isAdmin && userIdRaw && /^[0-9a-fA-F]{24}$/.test(userIdRaw)) {
+    const standing = await adminStanding(db, new ObjectId(userIdRaw));
+    if (standing.known && !standing.allowed) isAdmin = false;
+  }
 
   const conversationId = new ObjectId(id);
   const chat = await db.collection("support_chats").findOne({ _id: conversationId });
@@ -88,11 +93,18 @@ export async function GET(
     .toArray();
   const all = archived.map((a) => a.message as ServerMessage);
 
+  // The customer as they are named now (an admin may have renamed them); the
+  // copy stored on the conversation is for a record that no longer exists.
+  // Message lines keep the names they were written with.
+  const live = chat.userId instanceof ObjectId ? (await lookupUserNames(db, [chat.userId])).get(String(chat.userId)) : undefined;
+  const userName = live ?? personName({ firstName: chat.userFirstName, lastName: chat.userLastName });
+
   if (format === "json") {
     return NextResponse.json({
       conversationId: id,
       status: chat.status,
-      userFirstName: chat.userFirstName,
+      userFirstName: userName?.first ?? chat.userFirstName ?? null,
+      userName: userName ? { first: userName.first, last: userName.last, full: userName.full } : null,
       createdAt: chat.createdAt,
       resolvedAt: chat.resolvedAt,
       rating: chat.rating,
@@ -110,15 +122,17 @@ export async function GET(
     `Majestic Escape — Support Conversation Transcript`,
     `Conversation: ${id}`,
     `Status: ${chat.status}`,
-    `User: ${chat.userFirstName ?? (chat.userId ? "User" : "Guest")}`,
+    `User: ${userName?.full ?? (chat.userId ? "User" : "Guest")}`,
     `Created: ${new Date(chat.createdAt).toISOString()}`,
-    chat.resolvedAt ? `Resolved: ${new Date(chat.resolvedAt).toISOString()}` : "",
-    chat.rating ? `Rating: ${chat.rating.stars}/5${chat.rating.comment ? ` — ${chat.rating.comment}` : ""}` : "",
+    chat.resolvedAt ? `Resolved: ${new Date(chat.resolvedAt).toISOString()}` : null,
+    chat.rating ? `Rating: ${chat.rating.stars}/5${chat.rating.comment ? ` — ${chat.rating.comment}` : ""}` : null,
     "",
     "─".repeat(60),
     "",
+    "",
   ]
-    .filter(Boolean)
+    // Only the missing lines go; the blank ones set the header apart.
+    .filter((line) => line !== null)
     .join("\n");
 
   const body = header + all.map(formatLine).join("\n") + "\n";
