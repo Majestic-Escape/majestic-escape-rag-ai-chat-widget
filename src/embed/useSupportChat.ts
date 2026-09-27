@@ -368,6 +368,8 @@ export function useSupportChat(options: UseSupportChatOptions = {}): UseSupportC
           }
         }
         setMessages((prev) => applyIncoming(prev, incoming));
+        // What the agent was typing has arrived (as in WhatsApp).
+        if (incoming.role !== "user") setPeerTyping(false);
       })
     );
 
@@ -382,6 +384,7 @@ export function useSupportChat(options: UseSupportChatOptions = {}): UseSupportC
         }) => {
           if (payload.conversationId !== conversationIdRef.current) return;
           setStatusBoth(payload.status);
+          setPeerTyping(false);
           if (payload.assignedAdminName !== undefined) setAssignedAdminName(payload.assignedAdminName ?? null);
           if (payload.status === "resolved") {
             setAwaitingRating(true);
