@@ -932,8 +932,11 @@ const PANEL_GONE_MS = PANEL_EXIT_MS + 150;
 const KEYBOARD_MIN_PX = 150;
 
 // A support (re)connect quicker than this doesn't show "Connecting…". Every
-// open reconnects, and a quick one shouldn't flash the header.
-const CONNECTING_GRACE_MS = 800;
+// open reconnects, and an ordinary one shouldn't flash the header: measured
+// from India against production, the socket opens 0.8–2.3 s after the tap
+// (connected shortly after). A connection that fails still shows the
+// "Couldn't reach support" banner as soon as the attempt errors.
+const CONNECTING_GRACE_MS = 3000;
 
 // Within this of the end of the conversation, the reader is following along
 // and the list sticks to its end when it changes height; further up they are
