@@ -191,13 +191,13 @@ Files: [src/lib/supportSocket.ts](src/lib/supportSocket.ts), [src/app/api/suppor
 
 ### Connection handshake
 
-A client connects to `/support` Socket.IO namespace with EITHER:
+A client connects to the `/support` Socket.IO namespace with:
 
-- `auth: { token: <JWT> }` — for logged-in users and admins. JWT is verified with the shared `JWT_SECRET` (same secret as `server.me`).
-- `auth: { guestSessionId: "g_<uuid>" }` — for anonymous guests. The id is browser-generated and lives in BOTH `localStorage.meSupportGuestId` AND a year-long `meSupportGuestId` cookie.
-- Both are also accepted at once. This is how "sign-in upgrade" works (see Fix 7 below).
+- `auth.token` — a JWT (users and admins), verified with the shared `JWT_SECRET` (same secret as `server.me`). A token without a valid ObjectId `userId`/`id` is treated as no token.
+- `auth.guestSessionId` — the browser's guest id (`localStorage.meSupportGuestId` + a year-long cookie). **Untrusted input**: it is used only if it is a string matching `^[A-Za-z0-9_-]{1,100}$`; anything else (an object such as `{"$ne": null}`, an array, a long string) is dropped before it can reach a query.
+- `auth.proto` — `2` for current widget bundles (drafts, below); absent/`1` for bundles built before them.
 
-The middleware in `mountSupportNamespace` rejects connections that present neither.
+A socket with neither a usable token nor a usable guest id is refused. Every event payload is validated for shape before use (24-hex ids, text ≤ 2000, `clientMessageId` ≤ 64 of `[A-Za-z0-9_-]`, integer stars 1–5, comment ≤ 500, ack must be a function); anything else is an error ack or a no-op, never a database effect.
 
 ### What is "admin"?
 
@@ -208,99 +208,120 @@ A connection is treated as admin if any of the following match the JWT:
 3. `payload.userId` is in `ADMIN_USER_IDS` env var (comma-separated allow-list — needed because `admin.site`'s OTP login currently doesn't stamp the `admin` claim)
 4. `payload.email` is in `ADMIN_EMAILS` env var
 
-Once any of these matches, [supportSocket.ts:onAdminConnect](src/lib/supportSocket.ts) runs instead of `onUserConnect`.
+Once any of these matches, [supportSocket.ts:onAdminConnect](src/lib/supportSocket.ts) runs instead of `onUserConnect`. The token is only the entry ticket: every admin action re-reads the `admins` record (for the current name and standing) and a banned, deactivated or demoted admin is refused and disconnected; idle admin sockets are re-checked every 5 minutes; every socket is disconnected when its JWT expires. The REST routes (transcript, delete) apply the same record check.
+
+### Names are read from the records
+
+The customer's and the agent's names shown anywhere in support — the inbox row, the widget's "X is helping you", "handled by X", the handover / resolve lines written from now on, the transcript header, audit rows — come from `users` / `admins` (`firstName`, `lastName`) at the time of the action or the read, via [`src/lib/supportNames.ts`](src/lib/supportNames.ts). `server.me` owns those names (an admin renames users from the Users grid; admins rename themselves in Settings). The JWT `firstName` claim is only what was true at sign-in and lives 7 days, and `support_chats.userFirstName` / `assignedAdminName` are only what was true when written — they remain as the fallback for a record that no longer exists. Lines already written (system chips, transcript lines) keep the names they were written with: they are history.
 
 ### Conversation lifecycle
 
 ```
-guest opens support tab
+customer opens the Support tab
     │
     ▼
-onUserConnect:
-    if logged-in user has prior convos → load most recent open one
-    elif unrated resolved within 7 days → show rating prompt
-    else → create new pending convo, broadcast "support:new-conversation" to all admins
+onUserConnect (serialised per socket, under the customer's identity lock):
+    guest history to claim? → one transaction moves it (see §7)
+    an unresolved conversation?               → join it ("support:joined" with history)
+    else resolved + unrated within 7 days?    → join it with the rating prompt
+    else, proto 2 (current bundles)           → "support:joined" with conversationId: null — a DRAFT.
+                                                Nothing is written; no agent sees anything.
+    else, proto 1 (old bundles)               → create it now (createdBy: "legacy-open"),
+                                                but don't announce it — it stays out of the inbox
     │
     ▼
-admin clicks the conversation in /dashboard/support-chat
+first customer message (support:message with conversationId: null from a draft):
+    find-or-create under the identity lock; creation is guarded in the DATABASE by
+    activeKey ("u:<userId>") + a unique partial index, so two tabs / two instances
+    can't both create one (the loser attaches to the winner)
+    → every socket of the customer joins the room and gets "support:started"  (before the echo)
+    → the message is appended (one conditional pipeline update)
+    → the inbox gets "support:new-conversation" — exactly once, when the post-image holds
+      exactly one customer message
     │
     ▼
-support:assign emit
+agent opens it → support:assign → handleAssign (CAS on the previous assignee):
+    same agent → silent re-join; another agent → "handover" line; none → "join" line, status open
     │
     ▼
-handleAssign:
-    if admin already assigned → join room, return (no-op)
-    else if a different admin was assigned → push "handover" system msg
-    else → push "join" system msg, set status: open
+both ends in the Socket.IO room "support:<convId>"; customer-facing events also go to the
+customer's identity room "identity:u:<id>", so a second tab still in its draft hears them
     │
     ▼
-both ends in same Socket.IO room "support:<convId>"; messages broadcast there
+agent resolves → status resolved + system line in ONE update (only the winner writes it),
+activeKey removed, the customer gets the rating prompt
     │
     ▼
-admin clicks "Mark resolved" → handleResolve → status: resolved, system msg, user gets rating prompt
-    │
-    ▼
-user submits stars → handleRate → rating saved, broadcast to admin
+customer rates (only while resolved, only the owner) or skips (owner only)
 ```
+
+Old bundles and conversations created before this change keep working: a conversation with no customer message is simply not listed until one arrives; documents without `rev` / `activeKey` / `seq` behave as before (reads "read all", unread counts start from the stored value).
+
+**Failure boundaries.** The database is authoritative; socket events are best-effort (Socket.IO delivers at most once). A crash after a commit but before its events is repaired by the next inbox load (the conversation is there) and by the customer's reconnect (it joins the same conversation — no new document). Cross-instance *event* delivery during a deploy overlap is not provided (no socket.io adapter); cross-instance *creation* is safe via `activeKey`.
+
+### Ordering, idempotency and limits
+
+- **Per socket, in order.** A socket's lifecycle events (join, start, message, admin actions, rating) run one at a time in a bounded queue (≤ 32 waiting; a task that waited > 15 s is dropped unstarted with an error ack). Starts are never dropped — at most one runs and one waits, and every start is answered. The connection-time join answers the client's first `support:start`.
+- **Locks.** The identity lock and the guest lock are held until the holder's database work settles (never released on a timer); work under a lock uses `maxTimeMS` 5000; a waiter gives up after 10 s with "busy — try again".
+- **Conditional writes.** Every write carries ownership and expected state in its filter (customer append: owner and not resolved; assign: CAS on the previous assignee; resolve: not resolved; reopen: resolved; rate: owner and resolved; rating-dismissed: owner). Zero matches → an explicit error, nothing written.
+- **Commit order.** Each mutation increments `rev` in the same atomic update; messages carry `seq` (= that `rev`) and customer messages a running `userIdx`. Admin events and rows carry `rev` plus absolute state, so the inbox keeps the highest `rev` and never counts on its own. Unread = `userMsgs − readUserIdx.admin`, exact past the 500-message ring. Admin read receipts send `{seq, messageId}`; the server accepts them only if that message is in this conversation and advances with `$max` (a late, older receipt can't restore unread).
+- **Dedupe window.** `clientMessageId` is checked inside the append's filter. Every append to a conversation — customer, agent, system, auto — is capped at 120 per minute per conversation, so the 500-message ring always holds at least the last 2 minutes: a resend with the same id within 2 minutes is answered with the original (`duplicate: true`, no broadcast, no unread, no auto-ack); the same id with different text is refused.
+- **Light events.** `support:typing` only into a room the socket is in (no DB read), 10 per 10 s; `support:read` 30/min; `support:fetch-history` 10/min; `support:admin-more` 30/min.
+- **History.** `support:fetch-history` authorises in the read's own filter, joins the room, then reads — never joins first.
 
 ### Where every message is stored
 
 Two collections, on purpose:
 
-- **`support_chats.messages[]`** — a ring buffer holding the **latest 500** messages. Read by the live UI (admin reply panel, user widget rejoin) for fast access. When the array reaches 500 and a new message arrives, the oldest entry is automatically dropped via MongoDB's `$slice: -500` operator.
-- **`support_chats_archive`** — every message ever sent is permanently logged here as a standalone document `{conversationId, message, archivedAt}`. A unique compound index on `(conversationId, message._id)` makes retries idempotent.
+- **`support_chats.messages[]`** — a ring buffer holding the **latest 500** messages. Read by the live UI (admin reply panel, user widget rejoin) for fast access. When the array reaches 500 and a new message arrives, the oldest entry is dropped (`$slice: -500` inside the append's pipeline).
+- **`support_chats_archive`** — every message ever sent is logged here as a standalone document `{conversationId, message, archivedAt}`. A unique compound index on `(conversationId, message._id)` makes retries idempotent.
 
 The transcript export endpoint reads from the archive, so users always get the full history.
 
 ### Why this two-collection design?
 
 1. The 500-message ring buffer keeps each `support_chats` doc small (~250KB max) so admin list reads are fast.
-2. Compliance / legal requires that no message is ever silently dropped. The archive is the immutable log.
-3. **Ring-first, archive-second with retry**: `appendMessageWithArchive` pushes to the live ring buffer FIRST so the message is visible immediately, then writes to the archive with up to **3 retries** (50ms / 200ms backoff). The unique compound index on `(conversationId, message._id)` makes retries idempotent. If all 3 archive retries fail, the message is still in the ring buffer and we log `[support] archive insert FAILED after 3 retries` for an operator to chase. This trades the prior "archive-first" strict ordering for live-visibility-first, which matters more in a real-time chat.
+2. Compliance / legal requires that no message is ever silently dropped. The archive is the log.
+3. **Ring-first, archive-second with retry**: the append writes the live ring FIRST so the message is visible immediately, then writes the archive with up to **3 retries** (50ms / 200ms backoff); the unique index makes retries idempotent. If all 3 fail the message is still in the ring and `[support] archive insert FAILED after 3 retries` is logged for an operator. **Known limitation:** if the ring later evicts that message, the transcript loses it; a repair job could only copy messages still in the ring.
 
 ### Auto-acknowledgement (no LLM)
 
-Files: [src/lib/supportSocket.ts → handleIncomingMessage](src/lib/supportSocket.ts) (the auto-ack block immediately after the user-message broadcast).
+When a customer message lands in a conversation with no agent assigned and no auto-acknowledgement in the last 5 minutes, the server appends a templated **system message with `kind: "auto"`** (first-ack vs follow-up template, chosen from the append's post-image). This is **not** an LLM call. The guard is atomic — the append's filter includes `assignedAdminId: null` and `$nor: [{ messages: { $elemMatch: { from: "system", kind: "auto", createdAt: { $gte: fiveMinAgo } } } }]` — so concurrent first messages produce exactly one. It is not announced to the inbox as its own event.
 
-When a user sends a message into a conversation that has no admin assigned yet, the server emits a templated **system message with `kind: "auto"`** so the user gets an instant acknowledgement instead of staring at a silent void. This is **not** an LLM call — it's a static template chosen from two strings (first-ack vs follow-up).
+The client renders these as **regular agent bubbles** — `toLocal()` maps `{from:"system", kind:"auto"}` → `role:"model"`. Only `join` / `handover` / `resolve` / `reopen` render as centred italic chips.
 
-Race-safe via atomic `updateOne`:
+### The widget's side (`useSupportChat`)
 
-```ts
-chats.updateOne(
-  {
-    _id: conversationId,
-    assignedAdminId: null,
-    $nor: [{ messages: { $elemMatch: { from: "system", kind: "auto", createdAt: { $gte: fiveMinAgo } } } }],
-  },
-  { $push: { messages: { $each: [autoMsg], $slice: -MAX_MESSAGES_PER_CONVO } } }
-)
-```
-
-If two user messages arrive concurrently, exactly one update succeeds; the others see `matchedCount === 0` and skip the emit. No double-firing. Once an admin engages, `assignedAdminId !== null` short-circuits the whole block — no auto-ack noise on top of an active human conversation.
-
-The client renders these messages as **regular agent bubbles** (left-aligned, white card, headset avatar) — `useSupportChat → toLocal()` maps `{from:"system", kind:"auto"}` → `role:"model"` so it visually matches the greeting and any subsequent admin replies. Only the legitimately-event-y kinds (`join` / `handover` / `resolve` / `reopen`) render as centred italic chips.
+- Sends `proto: 2`; a join can be a draft (`conversationId: null`). Events that arrive before this connection's join are held (≤ 100) and applied after it.
+- `support:started` is taken when the tab has nothing else open (a draft, the same conversation, or a resolved one it was showing).
+- Joins and starts merge the server history into the thread (`mergeInto` in [`src/embed/supportThread.ts`](src/embed/supportThread.ts)): bubbles on screen keep their React key, so an echo never re-fades its bubble.
+- Outbox (≤ 20): a send with no answer in 10 s (or a dropped connection) becomes "Delivery not confirmed"; after a reconnect it is resent automatically **once**, with the same id, only within 2 minutes of the first send, only into the conversation it targeted (a draft message only into a draft), and only if the rejoin's history lacks it. A refusal returns the text to the message box when it is empty, otherwise the bubble shows "Not sent · Retry · Remove". A manual retry the server can no longer deduplicate asks "This may already have been delivered" first and goes as a new message.
+- "Start fresh" is hidden in Support until the customer has written something, and warns when messages are still unconfirmed.
 
 ### Socket events at a glance
 
 | Event | Direction | Payload | Purpose |
 |---|---|---|---|
-| `support:joined` | server → client | `{conversationId, history, status, assignedAdminName, rating, awaitingRating}` | initial state on connect |
-| `support:message` | client → server / server → room | `{conversationId, text, clientMessageId?}` | new message |
-| `support:typing` | client → server / server → room | `{conversationId, isTyping}` | typing indicator (debounced 2s, server verifies sender owns the conversation before broadcasting) |
-| `support:read` | client → server | `{conversationId, lastMessageId?}` | mark messages read |
-| `support:assign` | admin → server | `{conversationId}` | take ownership |
-| `support:resolve` | admin → server | `{conversationId}` | close convo |
-| `support:reopen` | admin → server | `{conversationId}` | re-open a resolved convo |
-| `support:rate` | user → server | `{conversationId, stars, comment?}` | submit rating |
-| `support:rating-dismissed` | user → server | `{conversationId}` (server acks `{ok}`) | skip the rating prompt — client must wait for ack before emitting `support:start`, otherwise `onUserConnect` re-finds the still-unrated convo and replays the prompt |
-| `support:status` | server → room | `{conversationId, status, assignedAdminId?, assignedAdminName?}` | lifecycle change |
-| `support:new-conversation` | server → admins | `{conversationId, userFirstName}` | a new pending convo |
-| `support:conversation-updated` | server → admins | `{conversationId, lastMessage, status, ...}` | one-shot list refresh |
+| `support:start` | client → server | `{}` | (re)load the customer's state; answered with `support:joined` |
+| `support:joined` | server → client | `{conversationId \| null, history, status \| null, assignedAdminId, assignedAdminName, rating, awaitingRating}` | state on connect / start; `conversationId: null` = draft (proto 2) |
+| `support:started` | server → customer's sockets | `{conversationId, status, assignedAdminId, assignedAdminName, history}` | the customer's conversation now exists (sent before the first message's echo) |
+| `support:message` | client → server / server → room | in: `{conversationId \| null, text, clientMessageId?}`; ack `{ok, conversationId, messageId, duplicate?}` or `{ok:false, error}` | new message (`null` from a draft creates the conversation) |
+| `support:typing` | client → server / server → room | `{conversationId, isTyping}` | typing indicator; only into a room the socket is in, rate-limited |
+| `support:read` | client → server | customer: `{conversationId}`; admin: `{conversationId, seq, messageId}` (legacy `lastMessageId`) | mark read (ownership / message validated in the write) |
+| `support:assign` / `support:resolve` / `support:reopen` | admin → server | `{conversationId}` (ack `{ok}`) | take / close / re-open (reopen is refused while the customer has another open conversation) |
+| `support:rate` | customer → server | `{conversationId, stars, comment?}` (ack) | rating, only while resolved |
+| `support:rating-dismissed` | customer → server | `{conversationId}` (ack `{ok}`) | skip the rating prompt (owner only) |
+| `support:status` | server → room + identity | `{conversationId, status, assignedAdminId?, assignedAdminName?}` | lifecycle change |
 | `support:rated` | server → room | `{conversationId, rating}` | rating recorded |
-| `support:fetch-history` | client → server | `{conversationId}` | request full message history (admin or owner only) — used by admin reply console when opening a conversation |
-| `support:history` | server → client | `{conversationId, messages}` | replay of the full archived history (live + archive, deduped, sorted by `createdAt`) |
+| `support:admin-init` | server → admin | `{conversations: Row[], hasMore, openCount}` | first inbox page (50, conversations with a human message, newest first) |
+| `support:admin-more` | admin → server | `{before: {updatedAt: ISO, id}}`; ack `{ok, conversations, hasMore, openCount}` | next inbox page by cursor |
+| `support:new-conversation` | server → admins | `{conversationId, userFirstName, conversation: Row}` | a conversation's first customer message landed |
+| `support:conversation-updated` | server → admins | `{conversationId, rev, …absolute fields that changed: lastMessage, status, unread, updatedAt, assignedAdminId/Name, resolvedAt, rating}` | row update — keep the highest `rev`; `lastMessage` of a system line is not a preview |
+| `support:fetch-history` | client → server | `{conversationId}` | full history (admin or owner) |
+| `support:history` | server → client | `{conversationId, messages}` | archive-only older messages + the live ring, in commit order |
 | `support:error` | server → client | `{reason}` | non-fatal errors |
+
+`Row` = `{conversationId, userId, guestSessionId, userFirstName, userLastName, userName, status, lastMessage (latest customer/agent message, ≤ 160 chars), unread, updatedAt, assignedAdminId, assignedAdminName, rating, resolvedAt, rev}` — names live from the records.
 
 ---
 
@@ -364,8 +385,8 @@ Three identity types:
 If a guest sends a few messages and later signs in *in the same browser*:
 
 1. The widget keeps sending the `guestSessionId` even after the user logs in.
-2. On connect, [`onUserConnect`](src/lib/supportSocket.ts) sees BOTH a JWT and a `guestSessionId` → runs an `updateMany` that claims any `userId: null, guestSessionId: <id>` conversations into the user's account.
-3. Same upgrade is applied to `ai_chat_messages`.
+2. On connect, [`onUserConnect`](src/lib/supportSocket.ts) sees BOTH a JWT and a valid `guestSessionId` → once per socket, under the guest-id lock, ONE multi-document transaction moves the guest's `support_chats` AND `ai_chat_messages` into the account (a failure between the two moves neither). Claimed conversations lose their `activeKey`.
+3. Sockets still signed out with that guest id are removed from the claimed conversations' rooms before the claim is announced, and history reads carry the owner condition in their own filter — a guest tab left open can't keep reading the account's thread.
 
 After that, the guest's history follows the user across devices.
 
@@ -377,11 +398,12 @@ After that, the guest's history follows the user across devices.
 |---|---|---|
 | `/api/chat` | JWT-aware rate limit (60/min user, 15/min IP), daily cap (200/30), Origin allow-list halves rate when missing | Drain Gemini quota / rack up bills |
 | `/api/chat` body | `validateUserMessage` (string only, ≤2000 chars), `sanitizeText` (strips control bytes) | Inject NULs / corrupt logs |
-| `/support` socket auth | Either valid JWT or `guestSessionId` required | Connect anonymously without an id |
+| `/support` socket auth | A JWT with a valid ObjectId user id, or a well-formed `guestSessionId` (strings matching `^[A-Za-z0-9_-]{1,100}$` only) | Connect without an identity; pass `{"$ne": null}` as a guest id to read a stranger's thread or claim every guest's history |
+| `/support` token lifetime | Sockets disconnect at JWT expiry; admin standing re-read per action and every 5 min (and on the REST routes) | Keep acting as an admin after a ban / demotion |
 | `/support` admin events | Each `support:assign/resolve/reopen` checks `ctx.isAdmin` server-side | Promote themselves / close other people's chats |
-| `/support` cross-tenant | `handleIncomingMessage` re-checks ownership before every message | Send into someone else's conversation |
+| `/support` cross-tenant | Ownership and expected state inside every write's filter (message, read, rate, rating-dismissed) and every history read's filter | Send into, read, rate or dismiss someone else's conversation — including by racing a check |
 | Conversation IDs | `safeConversationId()` regex (`^[0-9a-f]{24}$`) before any `new ObjectId(...)` | Inject `{$ne: null}` Mongo operators |
-| `clientMessageId` field | Type-checked: must be string, ≤64 chars | Same as above, via the dedup field |
+| `clientMessageId` field | `^[A-Za-z0-9_-]{1,64}$` | Same as above, via the dedup field |
 | `support:rate` | Stars must be 1..5 integer, comment ≤500 chars, only allowed on `status === "resolved"` | Crash the rate handler / spam ratings |
 | Prompt injection | Regex heuristic logs (does NOT reject); `SAFETY_DIRECTIVE` appended to every system prompt instructs the model to refuse | Force the LLM to leak the system prompt |
 | Logs | `redactForLogs()` masks email, phone, card numbers before logging | PII in production logs |
@@ -476,7 +498,7 @@ curl -X POST https://chat-rag.majesticescape.in/api/admin/embed-all -H "Authoriz
 curl -X DELETE https://chat-rag.majesticescape.in/api/admin/conversations/<convId> -H "Authorization: Bearer <admin-jwt>"
 ```
 
-This deletes from `support_chats`, all archive rows, and writes a `delete` row to `support_audit`.
+This deletes from `support_chats`, all archive rows, and writes a `delete` row to `support_audit` (named from the admin's record). A banned or demoted admin is refused even with an unexpired token.
 
 ### "Export a conversation transcript"
 
@@ -509,7 +531,7 @@ curl "https://chat-rag.majesticescape.in/api/support/conversations/<convId>/tran
 |---|---|---|
 | `listingproperties` | `server.me` | We only write `embedding`, `embeddingUpdatedAt` via raw driver |
 | `bookings` | `server.me` | We read `{propertyId, status, checkIn, checkOut}` for availability filter |
-| `support_chats` | this service | `{userId, guestSessionId, userFirstName, status, messages[], assignmentHistory[], rating, ...}` |
+| `support_chats` | this service | `{userId, guestSessionId, userFirstName (fallback copy), status, messages[] (each with `seq`, customer ones `userIdx`), assignmentHistory[], rating, rev, userMsgs, readUserIdx.admin, activeKey (only while unresolved), createdBy ("first-message" \| "legacy-open"), ...}` — indexes `active_key_unique` (unique partial), `user_status_updated`, `guest_status_updated` (partial), `status_updated`, `updated_id`, created at startup |
 | `support_chats_archive` | this service | `{conversationId, message, archivedAt}` — unique on `(conversationId, message._id)` |
 | `support_audit` | this service | `{conversationId, actorId, actorName, action, details, ts}` |
 | `ai_chat_messages` | this service | `{userId, guestSessionId, role, text, createdAt, properties?}` — `properties` only set on `role:"model"` rows that returned property cards, so a reload restores the same carousel cards under each AI reply |

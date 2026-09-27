@@ -40,9 +40,12 @@ npm run build:embed    # vite build → public/embed/widget.js (~92 kB gzipped)
 npm run build:server   # esbuild server.ts + src/** → dist/server.cjs
 npm start              # NODE_ENV=production node dist/server.cjs (precompiled — NOT tsx)
 npm run atlas:create-index  # idempotently create the listing_vector_index
+npm run verify:support        # /support socket contract (real namespace, LOCAL Mongo replica set)
+npm run verify:support-client # widget thread/outbox rules (pure, no server)
+npm run verify:support-routes # transcript + delete routes (LOCAL Mongo)
 ```
 
-There's no `npm test` or lint config beyond `next lint`. UI verification is done by driving `localhost:3000/stays` (user.website) and `localhost:3001/dashboard/support-chat` (admin.site) via Playwright MCP.
+There's no `npm test` or lint config beyond `next lint`. The `verify:*` scripts are standalone checks: the Mongo ones need a LOCAL replica set (default `mongodb://127.0.0.1:27417/?replicaSet=rs0`, override with `SUPPORT_VERIFY_MONGODB_URI`), refuse remote/SRV URIs, create a uniquely named database and drop only that one. `SUPPORT_VERIFY_ONLY=<group>` runs one group of `verify:support`. UI verification is done by driving `localhost:3000/stays` (user.website) and `localhost:3001/dashboard/support-chat` (admin.site) via Playwright MCP.
 
 ## Port assignments (the whole majestic-escape system)
 
@@ -84,9 +87,11 @@ The bundle compiles Tailwind classes into a `<style>` tag injected into the Shad
 When you add a new event to `supportSocket.ts`:
 
 1. Document it in the `ARCHITECTURE.md §5` events table.
-2. If it mutates state, run via `appendMessageWithArchive` (ring + retry-archive) so messages survive crashes.
-3. **Authz**: check `ctx.isAdmin` for admin-only ops; check ownership (userId or guestSessionId) for user ops. The `support:typing` handler is the model — ownership-checked before broadcast.
-4. If the client side needs to know "the server has committed this", give the event an `ack?: (r: {ok, error?}) => void` parameter and use it. The `support:rating-dismissed` race fix relied on this pattern — without an ack, `support:start` raced past the dismiss write.
+2. **Validate the payload's shape first** (`payloadOf`, `ackOf`, `safeConversationId`, the regexes at the top of the file). Socket payloads are untrusted: never let a raw value reach a query — `{"$ne": null}` where a string was expected is an operator injection.
+3. **Authz inside the write.** Admin-only: `ctx.isAdmin` AND a fresh `actingAdmin` read (the record can have been banned since the handshake). User ops: put `ownerFilterOf(ctx)` and the expected state in the update's own filter — never check-then-write — and treat zero matches as an explicit error.
+4. If it adds a message, go through `appendMessage` (one pipeline update: `rev`/`seq`, unread counters, dedupe, ring cap) then `archiveMessage`. Any other mutation of a conversation increments `rev` in the same update and puts `rev` + absolute state on its admin event.
+5. If it changes lifecycle state, run it on the socket's queue (`state.queue.run`) so it can't interleave with the same socket's join or first message.
+6. If the client needs to know "the server has committed this", give the event an ack and answer it on every path (`ackOf` makes a missing/foreign ack a no-op).
 
 ### When to use which message rendering
 
@@ -201,13 +206,31 @@ you'll run a stale bundle and wonder why your change did nothing.
 
 Some Windows/ISP DNS configurations refuse TXT record queries for Atlas SRV hostnames (`EREFUSED`). Mongoose 7 in `server.me` is particularly susceptible. The fix is **at the OS / env level** — switch DNS to 8.8.8.8 OR convert the URI to the direct (non-SRV) form. See `server.me/.env`'s commented direct URI for the pattern. This service uses the modern `mongodb` driver (v6) which is more resilient, but if you see `queryTxt EREFUSED`, look at the resolver, not the code.
 
-### `support:start` is debounced
+### A conversation starts with the customer's first message
 
-The handler ignores duplicate emits within 500ms. If you're testing rapid reconnects and `support:joined` doesn't fire on the second emit, that's why. The debounce is per-socket; a fresh socket connection resets the timer.
+Opening the Support tab writes nothing for current bundles (`auth.proto: 2`): the join is a draft (`conversationId: null`) and the first `support:message` with `conversationId: null` creates the conversation. Only then does it reach the agents' inbox (`support:new-conversation`, exactly once). Old bundles (no `proto`) still get an eager conversation on open, marked `createdBy: "legacy-open"` and kept out of the inbox until a customer message lands — remove that path only once no such empty documents appear for 2 weeks (the bundle is cached up to 24 h with stale-while-revalidate).
+
+"One open conversation per customer" is enforced by the database (`activeKey` + the unique partial index `active_key_unique`), not only by the in-process identity lock — keep `activeKey` on every insert, remove it on resolve / claim, restore it on reopen only if free.
+
+### `support:start` is never dropped
+
+The old 500 ms debounce dropped starts (a Skip → Start fresh within 100 ms stranded the widget). Starts are now coalesced — one runs, one waits, every start is answered — and the connection-time join answers the client's first start. Don't reintroduce a drop.
+
+### Names come from `users` / `admins`, never the token
+
+The JWT `firstName` claim is what was true at sign-in and lives 7 days; `userFirstName` / `assignedAdminName` on a conversation are what was true when written. An admin can rename users (Users grid) and themselves (Settings) at any time, so anything that shows a name reads it from the record via `src/lib/supportNames.ts` at the time of the action or the read, with the stored copy only as the fallback for a deleted record. Already-written lines (system chips, transcript lines) keep their names — they are history. Customers only ever receive an agent's FIRST name.
+
+### Locks and queues never release on a timer
+
+`withKeyLock` releases only when the holder's work settles; a waiter gives up after 10 s without running. Releasing on a timeout would let the next holder overlap a database write that is still running. Work under a lock uses `maxTimeMS` so it can't hang. The per-socket queue is bounded (32) and drops tasks that waited more than 15 s — unstarted, so nothing overlaps either.
+
+### The archive is best-effort after the ring
+
+If all three archive retries fail, the message lives only in the 500-message ring and is lost from the transcript if the ring later evicts it (`archive insert FAILED` in the logs). Known and accepted; a repair job could only copy what is still in the ring.
 
 ### Concurrent first auto-acks were possible — now atomic
 
-The auto-ack guard uses `chats.updateOne` with a filter that includes `$nor: [{ messages: { $elemMatch: { from: "system", kind: "auto", createdAt: {$gte: fiveMinAgo} } } }]`. If you change the auto-ack flow, preserve the atomic guard or expect race-condition double-fires under load.
+The auto-ack is appended with a filter that includes `assignedAdminId: null` and `$nor: [{ messages: { $elemMatch: { from: "system", kind: "auto", createdAt: {$gte: fiveMinAgo} } } }]`. If you change the auto-ack flow, preserve the atomic guard or expect race-condition double-fires under load (`verify:support` group `life-race` checks it).
 
 ### Don't return `list[0]` on CORS rejection
 
@@ -307,7 +330,7 @@ A Gemini API key valid for `gemini-2.0-flash` (text generation) can still return
 
 ### Sister page `admin.site/src/app/dashboard/support-chat/page.jsx`
 
-The admin reply console connects to the same `/support` namespace via its own socket. Two patterns mirror what's in `useSupportChat`:
+The admin reply console connects to the same `/support` namespace via its own socket. Its inbox is paged (`support:admin-init` → `support:admin-more` by cursor), rows keep the highest `rev` and take absolute state from events (never count locally), and read receipts send `{seq, messageId}`. Two patterns mirror what's in `useSupportChat`:
 
 1. On `connect` (initial AND every reconnect), if a conversation is open (`activeIdRef.current`), the admin re-emits `support:fetch-history` + `support:assign`. The server's `handleAssign` short-circuits to a silent `socket.join(room)` when the same admin is still assigned, so re-emitting is a no-op room-rejoin. Without this, a reconnect leaves the fresh socket only in `ADMINS_ROOM` — live messages for the open thread silently stop until the admin clicks away and back.
 2. The same `visibilitychange` reconnect listener.
