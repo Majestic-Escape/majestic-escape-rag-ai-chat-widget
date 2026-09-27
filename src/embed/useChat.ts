@@ -26,11 +26,21 @@ export function useChat() {
   // Set when /api/chat answers 403 ai_disabled — the ops kill-switch was flipped
   // while this page was open. ChatWidget watches this and hides the AI tab.
   const [aiDisabled, setAiDisabled] = useState(false);
+  // The saved conversation has been looked up (found, empty or failed). Until
+  // then the widget holds back the starter prompts, which a restored
+  // conversation would replace a moment later.
+  const [aiHistoryReady, setAiHistoryReady] = useState(false);
   const aiHistoryLoadedRef = useRef(false);
+  // Bumped by forgetAi(), so a lookup still in flight for the previous person
+  // can't land in the next one's conversation.
+  const historyGenRef = useRef(0);
+  // The reply being streamed, so forgetAi() can stop it.
+  const replyRef = useRef<AbortController | null>(null);
 
   const loadAiHistoryOnce = useCallback(async () => {
     if (aiHistoryLoadedRef.current) return;
     aiHistoryLoadedRef.current = true;
+    const gen = historyGenRef.current;
     try {
       const token = getAuthToken();
       const guestSessionId = token ? null : getOrCreateGuestId();
@@ -42,7 +52,7 @@ export function useChat() {
       const res = await fetch(`${getBackendUrl()}/api/chat/history?${params.toString()}`, {
         headers,
       });
-      if (!res.ok) return;
+      if (gen !== historyGenRef.current || !res.ok) return;
       const data = (await res.json()) as {
         messages?: Array<{
           role: "user" | "model";
@@ -52,7 +62,7 @@ export function useChat() {
         }>;
       };
       const rows = data.messages ?? [];
-      if (rows.length === 0) return;
+      if (gen !== historyGenRef.current || rows.length === 0) return;
       setAiMessages((prev) => {
         if (prev.length > 1) return prev;
         const restored: Message[] = rows.map((r, i) => ({
@@ -67,6 +77,8 @@ export function useChat() {
       });
     } catch {
       /* silent — non-critical */
+    } finally {
+      if (gen === historyGenRef.current) setAiHistoryReady(true);
     }
   }, []);
 
@@ -124,6 +136,9 @@ export function useChat() {
       };
       setActive((prev) => [...prev, modelMsg]);
 
+      replyRef.current?.abort();
+      const reply = new AbortController();
+      replyRef.current = reply;
       try {
         const token = getAuthToken();
         const guestSessionId = token ? null : getOrCreateGuestId();
@@ -139,6 +154,7 @@ export function useChat() {
             mode,
             guestSessionId,
           }),
+          signal: reply.signal,
         });
 
         // Ops flipped the kill-switch while this page was open. /embed/widget.js
@@ -201,11 +217,15 @@ export function useChat() {
           }
         }
       } catch (err) {
+        if (reply.signal.aborted) return; // forgotten: its conversation is gone
         console.error("Chat error:", err);
         setError("I'm having trouble connecting right now. Please try again.");
         setActive((prev) => prev.filter((m) => m.id !== modelMsgId));
       } finally {
-        setIsLoading(false);
+        if (replyRef.current === reply) {
+          replyRef.current = null;
+          setIsLoading(false);
+        }
       }
     },
     [aiMessages, supportMessages]
@@ -214,6 +234,21 @@ export function useChat() {
   const resetAiMessages = useCallback(() => {
     setAiMessages([AI_GREETING]);
     aiHistoryLoadedRef.current = true;
+    setAiHistoryReady(true);
+  }, []);
+
+  // The signed-in person changed: drop their conversation, and look the next
+  // person's up afresh on the next initChat.
+  const forgetAi = useCallback(() => {
+    historyGenRef.current++;
+    aiHistoryLoadedRef.current = false;
+    // a reply still streaming for them: stop it, or the next person waits it out
+    replyRef.current?.abort();
+    replyRef.current = null;
+    setIsLoading(false);
+    setAiMessages([]);
+    setAiHistoryReady(false);
+    setError(null);
   }, []);
 
   return {
@@ -225,5 +260,7 @@ export function useChat() {
     sendMessage,
     initChat,
     resetAiMessages,
+    aiHistoryReady,
+    forgetAi,
   };
 }

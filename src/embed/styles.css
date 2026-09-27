@@ -48,6 +48,18 @@
   100% { transform: scale(1); opacity: 1; }
 }
 
+/* A loading indicator that only appears if the wait is noticeable: a quick
+ * load finishes before it shows, so nothing flashes. Opacity only, so it
+ * stays on under prefers-reduced-motion. */
+@keyframes mc-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.mc-delayed-fade {
+  opacity: 0;
+  animation: mc-fade-in 0.2s ease-out 0.5s forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mc-float, .mc-halo, .mc-wiggle, .mc-pop-in {
     animation: none !important;
