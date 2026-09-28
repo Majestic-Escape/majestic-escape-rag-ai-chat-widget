@@ -1,10 +1,35 @@
-import React, { forwardRef, useCallback, useEffect, useRef } from "react";
+import React, { forwardRef, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
 // A message never contains a line break, as with the <input type="text"> this
 // field replaces; breaks that get in become one space per run. Never makes
 // the text longer, so maxLength still holds.
 const LINE_BREAKS = /[\r\n\u2028\u2029]+/g;
 const HAS_LINE_BREAK = /[\r\n\u2028\u2029]/;
+
+// How many wrapped lines the field grows to before it scrolls internally
+// instead \u2014 WhatsApp-style. A caller can pass a different `maxRows`.
+const DEFAULT_MAX_ROWS = 5;
+
+// The field's natural height for its current value: `rows=1` (or CSS)
+// supplies the resting height, this grows it up to `maxRows` of wrapped
+// text and switches to an internal scrollbar beyond that. Reads the
+// computed line-height/padding/border fresh each time rather than caching
+// them, so it stays correct across a browser zoom or font-size change.
+function autoResize(el: HTMLTextAreaElement, maxRows: number) {
+  const cs = getComputedStyle(el);
+  const lineHeight = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
+  const border = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+  const padding = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  const max = lineHeight * maxRows + padding + border; // border-box height, to set on `el.style.height`
+  el.style.height = "auto"; // shrink first, so scrollHeight reflects the new content, not the old box
+  // scrollHeight is always content+padding, never border, whatever the box's
+  // own box-sizing is (Tailwind's preflight makes that border-box here) — add
+  // it back so the box actually fits what was just measured, not `border`px short.
+  const contentHeight = el.scrollHeight + border;
+  const next = Math.min(contentHeight, max);
+  el.style.height = `${next}px`;
+  el.style.overflowY = contentHeight > max + 0.5 ? "auto" : "hidden";
+}
 
 function flattenLineBreaks(text: string, caret: number) {
   const at = Math.max(0, Math.min(caret, text.length));
@@ -46,25 +71,34 @@ function submitImplicitly(form: HTMLFormElement | null) {
   }
 }
 
-type Props = Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, "rows" | "wrap">;
+type Props = Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, "rows" | "wrap"> & {
+  /** Wrapped lines before the field scrolls internally instead of growing further. */
+  maxRows?: number;
+};
 
 /**
- * The widget's message field: one line, Enter sends (via the caller's
- * onKeyDown, as before).
+ * The widget's message field: Enter sends (via the caller's onKeyDown, as
+ * before); text wraps and the field grows with it, like a WhatsApp/iMessage
+ * composer, up to `maxRows` and then scrolls internally.
  *
  * Why a <textarea>: Chrome on Android shows its autofill bar (passwords, cards,
  * addresses) above the keyboard for every text <input>, autocomplete="off" or
- * not, and never for a textarea. A chat message is never autofill data.
+ * not, and never for a textarea. A chat message is never autofill data. (This
+ * is about the element, not its row count or wrapping — both are unrelated
+ * to Chrome's autofill heuristic.)
  *
- * It stays single-line, so what is sent is exactly what the input sent:
- * Enter never inserts a break, and one the caller leaves alone (Shift+Enter)
- * submits the form as the input's implicit submission did; a keyboard that
- * commits "\n" instead of pressing Enter gets the same Enter; pasted,
- * dropped or committed breaks become spaces. Enter that confirms an IME
- * composition only confirms it — it never reaches onKeyDown.
+ * The MESSAGE stays one logical line, exactly as an <input> sent it, even
+ * though it may span several visual rows:
+ *   - Enter never inserts a break, and one the caller leaves alone
+ *     (Shift+Enter) submits the form as the input's implicit submission did;
+ *   - a keyboard that commits "\n" instead of pressing Enter gets the same
+ *     Enter;
+ *   - pasted, dropped or committed breaks become spaces.
+ * Enter that confirms an IME composition only confirms it — it never reaches
+ * onKeyDown.
  */
 export const ComposerField = forwardRef<HTMLTextAreaElement, Props>(function ComposerField(
-  { className = "", onChange, onKeyDown, ...props },
+  { className = "", maxRows = DEFAULT_MAX_ROWS, onChange, onKeyDown, ...props },
   ref
 ) {
   const fieldRef = useRef<HTMLTextAreaElement | null>(null);
@@ -168,11 +202,27 @@ export const ComposerField = forwardRef<HTMLTextAreaElement, Props>(function Com
     return () => el.removeEventListener("beforeinput", onBeforeInput);
   }, []);
 
+  // Grows with the (wrapped) content, capped at maxRows — before paint, so
+  // a restored draft or a programmatic clear never flashes the wrong height.
+  useLayoutEffect(() => {
+    const el = fieldRef.current;
+    if (el) autoResize(el, maxRows);
+  }, [props.value, maxRows]);
+
+  // A browser zoom or orientation change can change the line-height in CSS
+  // pixels without changing the value; recompute against the same content.
+  useEffect(() => {
+    const el = fieldRef.current;
+    if (!el) return undefined;
+    const onResize = () => autoResize(el, maxRows);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [maxRows]);
+
   return (
     <textarea
       ref={setRef}
       rows={1}
-      wrap="off"
       autoComplete="off"
       autoCorrect="on"
       autoCapitalize="sentences"
@@ -182,7 +232,7 @@ export const ComposerField = forwardRef<HTMLTextAreaElement, Props>(function Com
       {...props}
       onChange={handleChange}
       onKeyDown={handleKeyDown}
-      className={`block resize-none overflow-x-auto overflow-y-hidden whitespace-pre [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${className}`}
+      className={`block resize-none [overflow-wrap:anywhere] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-black/15 [&::-webkit-scrollbar-thumb]:rounded-full ${className}`}
     />
   );
 });

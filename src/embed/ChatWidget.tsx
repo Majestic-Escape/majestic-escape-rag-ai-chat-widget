@@ -2103,7 +2103,10 @@ export const ChatWidget: React.FC = () => {
                   {(support.assignedAdminName ?? "Support agent")} is typing…
                 </div>
               )}
-              <form onSubmit={(e) => handleSend(e)} className="relative flex items-center">
+              {/* items-end, not items-center: as the field grows past one
+                  line the send button stays pinned to its bottom edge
+                  (WhatsApp-style), not re-centred in the whole grown height. */}
+              <form onSubmit={(e) => handleSend(e)} className="relative flex items-end">
                 <ComposerField
                   ref={inputRef}
                   value={inputValue}
@@ -2113,7 +2116,7 @@ export const ChatWidget: React.FC = () => {
                   }}
                   onKeyDown={handleKeyDown}
                   placeholder={effectiveMode === "ai" ? "Ask AI to find stays..." : "Type your message..."}
-                  className="w-full bg-gray-100 border border-transparent text-graphite text-[14px] rounded-full pl-4 pr-12 py-3 focus:outline-none focus:bg-white focus:border-primaryGreen focus:ring-1 focus:ring-primaryGreen transition-all placeholder:text-gray-400 disabled:opacity-60"
+                  className="w-full bg-gray-100 border border-transparent text-graphite text-[14px] leading-5 rounded-[1.25rem] pl-4 pr-12 py-3 focus:outline-none focus:bg-white focus:border-primaryGreen focus:ring-1 focus:ring-primaryGreen transition-all placeholder:text-gray-400 disabled:opacity-60"
                   maxLength={2000}
                 />
               <button
@@ -2125,7 +2128,7 @@ export const ChatWidget: React.FC = () => {
                 // announces unavailable; handleSend checks canSend.
                 aria-disabled={!inputValue.trim() || !canSend}
                 onMouseDown={(e) => e.preventDefault()}
-                className="absolute right-1.5 p-2 bg-primaryGreen text-white rounded-full hover:bg-brightGreen aria-disabled:opacity-50 aria-disabled:hover:bg-primaryGreen transition duration-150 motion-safe:active:scale-90 aria-disabled:active:scale-100 flex items-center justify-center"
+                className="absolute right-1.5 bottom-1.5 p-2 bg-primaryGreen text-white rounded-full hover:bg-brightGreen aria-disabled:opacity-50 aria-disabled:hover:bg-primaryGreen transition duration-150 motion-safe:active:scale-90 aria-disabled:active:scale-100 flex items-center justify-center"
                 aria-label="Send message"
               >
                 {isLoading ? (
