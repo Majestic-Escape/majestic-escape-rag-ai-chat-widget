@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useCurrentPathname, getBackendUrl, getAuthToken } from "./utils";
+import { useCurrentPathname, useHostModalOpen, getBackendUrl, getAuthToken } from "./utils";
 import {
   X,
   Send,
@@ -1050,6 +1050,14 @@ export const ChatWidget: React.FC = () => {
   const hidden = shouldHideOnPath(pathname);
 
   const [isOpen, setIsOpen] = useState(false);
+  // The host page has a sheet or dialog up (the stay page's "Check
+  // availability" sheet, filters, a photo lightbox). The launcher steps out of
+  // the way while it is: floating over the sheet it sat on the guest stepper's
+  // "+" and on the primary button, and a modal is a single task in any case.
+  // Paused while the panel is open — the panel's own scroll lock would read as
+  // a host modal.
+  const hostModalOpen = useHostModalOpen(isOpen || hidden);
+  const launcherShown = !isOpen && !hostModalOpen;
   const [mode, setMode] = useState<ChatMode>("ai");
   const [inputValue, setInputValue] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -2165,20 +2173,24 @@ export const ChatWidget: React.FC = () => {
           it stands, and is `invisible` once faded, so it is no hidden Tab
           stop while the panel is open. The button transitions transform and
           shadow only — `transition-all` also eased its inherited visibility,
-          leaving it unfocusable for a moment on close. */}
+          leaving it unfocusable for a moment on close. It leaves the same way
+          for a host modal, a little quicker (leaving is shorter than arriving)
+          and without the shrink under reduced motion. */}
       <div
         className={`
-          relative w-16 h-16 duration-300 ease-out
+          relative w-16 h-16 ease-out
           ${
             isOpen
-              ? "invisible opacity-0 scale-75 pointer-events-none transition-[opacity,transform,visibility]"
-              : "visible opacity-100 scale-100 pointer-events-auto transition-[opacity,transform]"
+              ? "duration-300 invisible opacity-0 scale-75 pointer-events-none transition-[opacity,transform,visibility]"
+              : hostModalOpen
+              ? "duration-200 invisible opacity-0 scale-75 motion-reduce:scale-100 pointer-events-none transition-[opacity,transform,visibility]"
+              : "duration-300 visible opacity-100 scale-100 pointer-events-auto transition-[opacity,transform]"
           }
         `}
       >
         {/* Soft pulsing halo — primaryGreen ring fading outward. Pure visual
             cue; aria-hidden so screen readers don't announce it. */}
-        {!isOpen && (
+        {launcherShown && (
           <span
             aria-hidden="true"
             className="absolute inset-0 rounded-full bg-primaryGreen/40 mc-halo pointer-events-none"
@@ -2234,7 +2246,7 @@ export const ChatWidget: React.FC = () => {
           {/* New-conversation indicator — small green-tinted dot with a
               gentle bounce so it reads as "hey, fresh chat" without the
               alarm-bell red of the previous version. */}
-          {!isOpen && messages.length === 0 && (
+          {launcherShown && messages.length === 0 && (
             <span
               aria-hidden="true"
               className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-brightGreen border-2 border-white rounded-full mc-pop-in"

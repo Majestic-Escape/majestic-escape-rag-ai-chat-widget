@@ -145,3 +145,71 @@ export function useCurrentPathname(): string {
   }, []);
   return path;
 }
+
+// The host page has a modal up: a bottom sheet, a dialog, a lightbox. Read from
+// what every such modal does to the page rather than from any one site's
+// markup, so a sheet added later is covered without touching this file. It
+// locks the page's scroll:
+//   - body pinned with position:fixed, or overflow:hidden on body or html
+//     (user.website's own sheets, the photo lightbox, the menu);
+//   - or react-remove-scroll's data-scroll-locked on body (Radix dialogs and
+//     sheets, vaul drawers).
+// A host modal that cannot lock scroll sets data-majestic-chat-hide-launcher on
+// <html> instead.
+//
+// Everything here is an attribute of <html> or <body>, which is the point: it
+// can be watched for the price of two observers. `aria-modal` is NOT used,
+// although it reads naturally: a sheet unlocks the page and then unmounts a
+// beat later, deep in the React tree, and that removal is invisible without
+// observing the whole subtree of the host app — so the launcher stayed hidden
+// after the sheet closed.
+//
+// Only overflow-y is read: user.website sets overflow-x:hidden on body and
+// html all the time, which computes overflow-y to auto, not hidden.
+const LOCKED = new Set(["hidden", "clip"]);
+const HIDE_LAUNCHER_ATTR = "data-majestic-chat-hide-launcher";
+
+function hostModalOpen(): boolean {
+  const body = document.body;
+  const root = document.documentElement;
+  if (!body) return false;
+  if (root.hasAttribute(HIDE_LAUNCHER_ATTR) || body.hasAttribute("data-scroll-locked")) return true;
+  const bodyStyle = getComputedStyle(body);
+  return (
+    bodyStyle.position === "fixed" ||
+    LOCKED.has(bodyStyle.overflowY) ||
+    LOCKED.has(getComputedStyle(root).overflowY)
+  );
+}
+
+// `paused` while the widget itself is open: its own scroll lock looks exactly
+// like a host modal, and the launcher is out of the way then anyway. It
+// re-reads when that ends, after the lock has been released.
+//
+// Cheap on purpose: no subtree observer on a React app. It watches only the
+// attributes a scroll lock flips on <html> and <body>, and coalesces a burst of
+// changes into one read per frame.
+export function useHostModalOpen(paused: boolean): boolean {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (paused || typeof MutationObserver === "undefined") return;
+    let frame = 0;
+    const sync = () => {
+      frame = 0;
+      setOpen(hostModalOpen());
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(sync);
+    };
+    sync();
+    const watched = ["style", "class", "data-scroll-locked", HIDE_LAUNCHER_ATTR];
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: watched });
+    observer.observe(document.body, { attributes: true, attributeFilter: watched });
+    return () => {
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [paused]);
+  return open;
+}

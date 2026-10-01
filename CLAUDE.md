@@ -256,6 +256,57 @@ only emits arbitrary utilities it can find verbatim in `src/embed/**`. Don't
 "fix" this by offsetting the panel below the header instead; the host header
 height varies per site and per route, and the panel is meant to overlay it.
 
+### The launcher steps aside while the host page has a modal up
+
+Out-stacking the host (above) has a cost: the launcher paints above the host's
+own sheets and dialogs. On user.website's stay page the "Check availability"
+sheet (a bottom sheet from the sticky price bar) had the launcher floating over
+its right edge — on the guest stepper's "+" and on the primary button — so a
+guest changing the number of guests tapped the chatbot instead.
+
+`useHostModalOpen` (`utils.ts`) hides the launcher — the same fade-and-shrink as
+when the panel opens, 200 ms out / 300 ms back, no shrink under reduced motion —
+while the host page has a modal up. It reads what a modal does to the page, not
+any one site's markup, so a sheet added later is covered:
+- `<body>` pinned (`position: fixed`), or `overflow-y: hidden|clip` on `<body>`
+  or `<html>`, or react-remove-scroll's `data-scroll-locked` (Radix dialogs and
+  sheets, vaul drawers);
+- or, for a modal that cannot lock scroll, the explicit opt-in
+  `data-majestic-chat-hide-launcher` on `<html>` (host sets and removes it).
+
+Invariants — each one was a bug or a near miss while building this:
+- **Do not use `aria-modal`.** It reads naturally, but user.website's sheets
+  unlock the page and unmount a beat later, deep in the React tree; that removal
+  fires no mutation on `<html>`/`<body>`, and observing the whole subtree of a
+  React app is the cost this design avoids. The launcher stayed hidden after
+  the sheet closed. Everything the hook reads is an attribute of `<html>` or
+  `<body>`, watched by two attribute-only observers (no `subtree`, no
+  `childList`), coalesced to one read per frame.
+- **Read only overflow-y.** The site keeps `overflow-x: hidden` on body and html
+  permanently, which computes overflow-y to `auto`; reading the `overflow`
+  shorthand would hide the launcher on every page.
+- **The hook is paused while the panel is open** (and on routes the widget hides
+  on). The panel's own scroll lock (<lg) is indistinguishable from a host modal;
+  the launcher is out of the way then anyway. It re-reads when the panel closes,
+  after the lock is released, so the launcher comes back.
+- The launcher is `invisible` while hidden: not a Tab stop, takes no taps; the
+  halo and the new-conversation dot are unmounted rather than animating unseen.
+
+The launcher itself keeps one fixed offset (`LAUNCHER_OFFSET`): above the sticky
+bottom bars on phones (112–176 px from the bottom), bottom-right on md+. A
+collision audit (12 routes x 14 viewports, 320 px phones to 1920 px desktops and
+two landscape phones, at the top, middle and end of each page) found no fixed or
+sticky control under it on any phone, and on tablet/desktop only one transient
+case: the stay page's sticky booking card at first paint on tablet portrait
+(768x1024: a corner of "Check availability", 8% of the launcher), gone after the
+first scroll because the card then sticks above it. What passes beneath the
+launcher while scrolling (cards, carousels, map controls) is ordinary content
+and is accepted. The one place content cannot scroll away is the very end of a
+page: user.website's footer has `pb-24` so its last row (the social icons) ends
+above the launcher's band (without it the WhatsApp link was partly covered on
+320 px phones). If another site embeds this widget, give its footer the same
+clearance.
+
 ### Mobile keyboard + scroll lock is interlocked — don't simplify
 
 Three pieces in `src/embed/ChatWidget.tsx` work together on `<lg` viewports and breaking any one of them re-opens UX bugs the user has already reported:
