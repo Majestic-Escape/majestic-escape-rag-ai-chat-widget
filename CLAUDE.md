@@ -293,7 +293,12 @@ Invariants — each one was a bug or a near miss while building this:
   halo and the new-conversation dot are unmounted rather than animating unseen.
 
 The launcher itself keeps one fixed offset (`LAUNCHER_OFFSET`): above the sticky
-bottom bars on phones (112–176 px from the bottom), bottom-right on md+. A
+bottom bars on phones (112–176 px from the bottom), bottom-right on md+. Its
+size and position are the `--mc-launcher-*` variables in `styles.css` (48 px
+on phones, 12 px from the edge, `7rem` + safe-area inset up; 64 px / 24 px on
+md+; 44 px on touch screens <= 500 px tall; landscape phones >= 600 px wide sit 72 px
+up, just above the 65 px tab bar). Never go under 44 px, and keep a phone
+offset >= the tallest host bar (stay page price bar 97 px + inset). A
 collision audit (12 routes x 14 viewports, 320 px phones to 1920 px desktops and
 two landscape phones, at the top, middle and end of each page) found no fixed or
 sticky control under it on any phone, and on tablet/desktop only one transient
