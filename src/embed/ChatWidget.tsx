@@ -985,7 +985,14 @@ function shouldHideOnPath(pathname: string): boolean {
 // tallest bottom UI on the consumer site — both the standard bottom nav and
 // the sticky "Reserve" bar on /stay/[id] — without per-route gymnastics that
 // would make the launcher visually jump as the user navigates.
-const LAUNCHER_OFFSET = "bottom-28 md:bottom-6";
+//
+// Position and size come from the --mc-launcher-* variables on :host
+// (styles.css), which hold the per-breakpoint values: phones 48px / 7rem above
+// the bottom + safe-area inset / 12px from the edge, md+ the original 64px
+// bottom-right, landscape phones 44px (and lower, above the tab bar). Written
+// as literal strings so Tailwind emits them.
+const LAUNCHER_OFFSET = "bottom-[var(--mc-launcher-bottom)] right-[var(--mc-launcher-right)]";
+const LAUNCHER_SIZE = "w-[var(--mc-launcher-size)] h-[var(--mc-launcher-size)]";
 
 // Stacking against the HOST page, not against ourselves.
 //
@@ -1727,7 +1734,7 @@ export const ChatWidget: React.FC = () => {
       {/* `pointer-events-none` here, `-auto` on whichever child is showing:
           this box stays the launcher's size, and must not catch the taps
           meant for the backdrop around it while the panel is open. */}
-      <div className={`fixed ${LAUNCHER_OFFSET} right-4 md:right-6 ${Z_PANEL_STACK} flex flex-col items-end font-poppins pointer-events-none`}>
+      <div className={`fixed ${LAUNCHER_OFFSET} ${Z_PANEL_STACK} flex flex-col items-end font-poppins pointer-events-none`}>
       {/* Chat Window — kept at its open-target position in both states so the
           transition only animates transform + opacity (which CSS can interpolate
           smoothly). Toggling between `absolute bottom-0 right-0` and `fixed
@@ -2178,7 +2185,7 @@ export const ChatWidget: React.FC = () => {
           and without the shrink under reduced motion. */}
       <div
         className={`
-          relative w-16 h-16 ease-out
+          relative ${LAUNCHER_SIZE} ease-out
           ${
             isOpen
               ? "duration-300 invisible opacity-0 scale-75 pointer-events-none transition-[opacity,transform,visibility]"
@@ -2201,8 +2208,8 @@ export const ChatWidget: React.FC = () => {
           ref={launcherRef}
           type="button"
           onClick={() => setIsOpen(!isOpen)}
-          className="
-            group relative w-16 h-16 rounded-full shadow-floating
+          className={`
+            group relative ${LAUNCHER_SIZE} rounded-full shadow-floating
             flex items-center justify-center
             bg-gradient-to-br from-white via-white to-lightGreen/40
             ring-2 ring-primaryGreen/20 hover:ring-primaryGreen/50
@@ -2210,7 +2217,7 @@ export const ChatWidget: React.FC = () => {
             hover:scale-110 hover:shadow-[0_12px_36px_rgba(54,98,31,0.35)]
             active:scale-95
             focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-primaryGreen/40
-          "
+          `}
           aria-label={
             // Mode-aware: with the assistant switched off there is no AI chat
             // to open, and announcing one to a screen-reader user would promise
@@ -2227,7 +2234,7 @@ export const ChatWidget: React.FC = () => {
             alt=""
             draggable={false}
             className="
-              w-11 h-11 select-none pointer-events-none
+              w-[var(--mc-launcher-mark)] h-[var(--mc-launcher-mark)] select-none pointer-events-none
               drop-shadow-[0_2px_4px_rgba(0,0,0,0.12)]
             "
             style={{ animation: "mc-float 3.6s ease-in-out infinite" }}
@@ -2249,7 +2256,7 @@ export const ChatWidget: React.FC = () => {
           {launcherShown && messages.length === 0 && (
             <span
               aria-hidden="true"
-              className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-brightGreen border-2 border-white rounded-full mc-pop-in"
+              className="absolute -top-0.5 -right-0.5 w-[var(--mc-launcher-dot)] h-[var(--mc-launcher-dot)] bg-brightGreen border-2 border-white rounded-full mc-pop-in"
               style={{ animation: "mc-pop-in 0.4s ease-out 0.6s both, bounce 2s ease-in-out 1s 3" }}
             />
           )}

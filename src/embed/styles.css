@@ -17,6 +17,54 @@
   --mc-vvh: 100dvh;
 }
 
+/* Launcher footprint. One set of variables drives the launcher's position, its
+ * box, the robot inside it and the new-conversation dot (ChatWidget.tsx reads
+ * them as w-[var(--mc-launcher-size)] etc.), so the four can never drift apart.
+ * Plain media queries, in this order, instead of Tailwind variants: the later
+ * rule wins, which is the only ordering these overlapping queries need.
+ *
+ * Phones (< 768px): 48px, tucked 12px from the edge. It stays 7rem above the
+ * bottom plus the safe-area inset: the host's fixed bottom bars (tab bar 65px,
+ * stay page price bar 97px, both + the same inset) are what it must clear, and
+ * 7rem is the clearance the previous release verified. The 48px box is above
+ * the 44px touch-target floor, so no extra hit area is needed.
+ * Desktop/tablet (>= 768px): the original 64px mark, 24px from the corner.
+ * Short touch screens (<= 500px tall with a coarse pointer, i.e. landscape
+ * phones; a short desktop window keeps the full size): 44px, still a full
+ * touch target. Phones in landscape whose width leaves room beside the stay
+ * page price bar's 512px column (>= 600px) sit just above the 65px tab bar
+ * instead, so the launcher stops covering the first screen's controls (the
+ * /offers "Filters" button at 667x375). Narrower landscape phones keep 7rem
+ * so they stay above the price bar. */
+:host {
+  --mc-launcher-size: 48px;
+  --mc-launcher-mark: 2rem;
+  --mc-launcher-dot: 0.75rem;
+  --mc-launcher-right: 0.75rem;
+  --mc-launcher-bottom: calc(env(safe-area-inset-bottom, 0px) + 7rem);
+}
+@media (min-width: 768px) {
+  :host {
+    --mc-launcher-size: 4rem;
+    --mc-launcher-mark: 2.75rem;
+    --mc-launcher-dot: 0.875rem;
+    --mc-launcher-right: 1.5rem;
+    --mc-launcher-bottom: 1.5rem;
+  }
+}
+@media (max-height: 500px) and (pointer: coarse) {
+  :host {
+    --mc-launcher-size: 44px;
+    --mc-launcher-mark: 1.75rem;
+    --mc-launcher-right: 0.75rem;
+  }
+}
+@media (min-width: 600px) and (max-width: 767px) and (max-height: 500px) {
+  :host {
+    --mc-launcher-bottom: calc(env(safe-area-inset-bottom, 0px) + 72px);
+  }
+}
+
 /* Launcher animations — scoped inside the Shadow DOM. The robot mascot uses:
  *  - mc-float: a slow ±3px vertical bob, like a hovercraft idle
  *  - mc-halo: a pulsing primaryGreen ring that fades outward (calls attention
