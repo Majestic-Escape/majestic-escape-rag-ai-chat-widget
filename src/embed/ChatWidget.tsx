@@ -690,6 +690,8 @@ interface MainMenuDrawerProps {
   isLoggedIn: boolean;
   /** False when the ops kill-switch is off — hides every AI-routing tile. */
   aiAvailable: boolean;
+  /** False when an admin has switched Support off: its menu tile goes. */
+  supportEnabled: boolean;
   /**
    * False when there is no conversation to clear — anonymous with the
    * assistant off, where the panel is just a sign-in prompt. "Start fresh"
@@ -714,6 +716,7 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
   returnFocusRef,
   isLoggedIn,
   aiAvailable,
+  supportEnabled,
   canStartFresh,
   pendingCount,
   mode,
@@ -796,6 +799,7 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
         // longer rendered and then hit a 403, so drop them rather than leave a
         // dead end in the menu.
         (t.action.kind !== "prompt" || aiAvailable) &&
+        (t.action.kind !== "support" || supportEnabled) &&
         // Likewise "start fresh" when there is nothing to clear.
         (t.action.kind !== "start-fresh" || canStartFresh)
     ),
@@ -1082,6 +1086,10 @@ export const ChatWidget: React.FC = () => {
   // tab appears a moment late) which is strictly the better failure — a missing
   // tab that arrives is a non-event, a forbidden tab that appears is not.
   const [aiEnabled, setAiEnabled] = useState<boolean | null>(null);
+  // Support switch from the same config. Unlike the AI switch this fails OPEN
+  // (unknown / unreachable config → on): hiding Support on a failed lookup
+  // would be the outage, and the server refuses a switched-off customer anyway.
+  const [supportEnabled, setSupportEnabled] = useState(true);
   const {
     aiMessages,
     isLoading: aiLoading,
@@ -1126,8 +1134,11 @@ export const ChatWidget: React.FC = () => {
   //     flash at a logged-out visitor while the assistant is actually on.
   const configResolved = aiEnabled !== null;
   const aiAvailable = aiEnabled === true;
-  const supportAvailable = isLoggedIn;
-  const needsLoginForSupport = configResolved && !aiAvailable && !supportAvailable;
+  const supportAvailable = isLoggedIn && supportEnabled;
+  // The sign-in prompt only makes sense when signing in would unlock something.
+  const needsLoginForSupport = configResolved && !aiAvailable && !isLoggedIn && supportEnabled;
+  // Both surfaces switched off: nothing to offer, so no launcher or panel at all.
+  const widgetOff = configResolved && !aiAvailable && !supportEnabled;
   // Render the segmented control whenever at least one tab exists. This
   // deliberately preserves the original behaviour for every AI-on case: an
   // anonymous visitor has always seen the bar with a lone "AI Assistant"
@@ -1152,7 +1163,7 @@ export const ChatWidget: React.FC = () => {
   // unavailable there is no sequence of renders that can show AI chrome,
   // regardless of when the effect runs. The effect below still syncs the state
   // so `setMode` callers stay coherent, but nothing visual depends on it.
-  const effectiveMode: ChatMode = aiAvailable ? mode : "support";
+  const effectiveMode: ChatMode = !aiAvailable ? "support" : !supportEnabled ? "ai" : mode;
 
   // Show only the active tab's history; AI from local hook, Support from Socket.IO hook.
   const messages = effectiveMode === "ai" ? aiMessages : support.messages;
@@ -1273,7 +1284,10 @@ export const ChatWidget: React.FC = () => {
           return;
         }
         const data = await res.json();
-        if (!cancelled) setAiEnabled(data?.aiEnabled === true);
+        if (!cancelled) {
+          setSupportEnabled(data?.supportEnabled !== false);
+          setAiEnabled(data?.aiEnabled === true);
+        }
       } catch {
         // Unreachable config → same reasoning: fail closed. The server would
         // refuse the request anyway, so showing the tab could only mislead.
@@ -1293,6 +1307,16 @@ export const ChatWidget: React.FC = () => {
   useEffect(() => {
     if (aiDisabled) setAiEnabled(false);
   }, [aiDisabled]);
+
+  // Same for Support: the server turned a live customer socket away.
+  useEffect(() => {
+    if (support.supportDisabled) setSupportEnabled(false);
+  }, [support.supportDisabled]);
+
+  // Never leave the user parked on the Support tab once it is gone.
+  useEffect(() => {
+    if (!supportEnabled && mode === "support" && aiAvailable) setMode("ai");
+  }, [supportEnabled, mode, aiAvailable]);
 
   // Never leave the user parked on a tab that is no longer rendered.
   // Waits for `configResolved`: while the answer is still unknown `aiAvailable`
@@ -1376,8 +1400,8 @@ export const ChatWidget: React.FC = () => {
   // back already open (skipping the check above), possibly for the next
   // person to sign in.
   useEffect(() => {
-    if (hidden) setIsOpen(false);
-  }, [hidden]);
+    if (hidden || widgetOff) setIsOpen(false);
+  }, [hidden, widgetOff]);
 
   // Browser-back closes the panel on mobile + tablet only. Pushes a sentinel
   // history entry when the panel opens; popping it (via the system back gesture
@@ -1709,7 +1733,7 @@ export const ChatWidget: React.FC = () => {
 
   // Hide widget on excluded routes (login, host dashboard, checkout, etc.).
   // Hooks above must run unconditionally so this `return` stays after them.
-  if (hidden) return null;
+  if (hidden || widgetOff) return null;
 
   return (
     <>
@@ -1787,6 +1811,7 @@ export const ChatWidget: React.FC = () => {
           returnFocusRef={menuButtonRef}
           isLoggedIn={isLoggedIn}
           aiAvailable={aiAvailable}
+          supportEnabled={supportEnabled}
           // Anonymous with the assistant off has neither an AI thread nor a
           // support socket, so there is genuinely nothing to reset.
           canStartFresh={!needsLoginForSupport && (effectiveMode !== "support" || hasUserMessage)}

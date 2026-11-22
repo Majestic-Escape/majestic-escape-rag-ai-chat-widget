@@ -14,13 +14,18 @@
 
 import { NextResponse } from "next/server";
 import { isAiEnabled } from "@/lib/aiToggle";
+import { getFeatureFlags } from "@/lib/featureToggles";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  // supportEnabled / messagingEnabled are additive: an older widget bundle or
+  // site that only reads `aiEnabled` keeps working. user.website reads
+  // `messagingEnabled` from here too, so its pages and the chat service agree.
+  const [aiEnabled, flags] = await Promise.all([isAiEnabled(), getFeatureFlags()]);
   return NextResponse.json(
-    { aiEnabled: await isAiEnabled() },
+    { aiEnabled, supportEnabled: flags.support, messagingEnabled: flags.messaging },
     // no-store so an ops flip reaches open browsers within the module's own
     // cache TTL rather than sitting behind a CDN/browser cache.
     { headers: { "Cache-Control": "no-store" } }

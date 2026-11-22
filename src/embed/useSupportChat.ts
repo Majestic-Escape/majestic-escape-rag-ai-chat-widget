@@ -63,6 +63,8 @@ export interface UseSupportChatOptions {
 export interface UseSupportChat {
   messages: Message[];
   isConnected: boolean;
+  /** An admin switched Support off; terminal for this page load. */
+  supportDisabled: boolean;
   isLoading: boolean;
   error: string | null;
   status: Status | null;
@@ -99,6 +101,10 @@ const CLOSED = "This conversation has been closed. Start a new one to continue."
 export function useSupportChat(options: UseSupportChatOptions = {}): UseSupportChat {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isConnected, setIsConnected] = useState(false);
+  // Admin switched Support off (handshake refused, or the server said so on a
+  // live socket). Terminal for this page load: no reconnect, no new socket.
+  const [supportDisabled, setSupportDisabled] = useState(false);
+  const supportDisabledRef = useRef(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
@@ -245,7 +251,7 @@ export function useSupportChat(options: UseSupportChatOptions = {}): UseSupportC
     // let callers spawn duplicates; combined with the connect/effect render
     // loop that storms the browser with WebSockets until it rejects them all
     // with "Insufficient resources" and the input stays disabled forever.
-    if (socketRef.current) return;
+    if (socketRef.current || supportDisabledRef.current) return;
     setError(null);
 
     const token = getAuthToken();
@@ -305,11 +311,26 @@ export function useSupportChat(options: UseSupportChatOptions = {}): UseSupportC
       setIsConnected(false);
       // "io server disconnect" is the one drop Socket.IO will NOT auto-
       // reconnect from — reconnect manually so the input never stays stuck.
-      if (reason === "io server disconnect") sock.connect();
+      if (reason === "io server disconnect" && !supportDisabledRef.current) sock.connect();
+    });
+
+    const markDisabled = () => {
+      supportDisabledRef.current = true;
+      setSupportDisabled(true);
+      setError(null);
+    };
+    // Sent just before the server drops a customer's socket.
+    sock.on("support:disabled", () => {
+      if (live()) markDisabled();
     });
 
     sock.on("connect_error", (err) => {
       if (!live()) return;
+      if ((err as Error & { data?: { code?: string } }).data?.code === "support_disabled") {
+        markDisabled();
+        sock.disconnect(); // the handshake was refused; do not let anything retry it
+        return;
+      }
       console.error("[support] connect_error", err);
       setError("Couldn't reach support. Retrying…");
     });
@@ -420,7 +441,7 @@ export function useSupportChat(options: UseSupportChatOptions = {}): UseSupportC
     // immediate reconnect rather than waiting out the backoff — otherwise the
     // input sits disabled for several seconds (or longer) after every idle gap.
     const onVisible = () => {
-      if (document.visibilityState === "visible" && socketRef.current && !socketRef.current.connected) {
+      if (document.visibilityState === "visible" && socketRef.current && !socketRef.current.connected && !supportDisabledRef.current) {
         socketRef.current.connect();
       }
     };
@@ -623,6 +644,7 @@ export function useSupportChat(options: UseSupportChatOptions = {}): UseSupportC
   return {
     messages,
     isConnected,
+    supportDisabled,
     isLoading,
     error,
     status,
