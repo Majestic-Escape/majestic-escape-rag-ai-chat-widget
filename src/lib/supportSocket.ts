@@ -4,6 +4,7 @@ import clientPromise, { appDbName } from "./mongodb";
 import { verifyToken, AppJwtPayload, resolveIsAdmin } from "./jwt";
 import { checkRateLimit, withKeyLock, createSerialQueue, type SerialQueue } from "./rateLimit";
 import { validateUserMessage, redactForLogs, sanitizeText } from "./moderation";
+import { __expireFeatureCache as expireFeature, isFeatureEnabled, peekFeature } from "./featureToggles";
 import { adminStanding, lookupAdminNames, lookupUserNames, personName, type PersonName } from "./supportNames";
 
 const SUPPORT_MSG_LIMIT = 20; // 20 messages per minute per user/guest
@@ -519,6 +520,23 @@ function allowLight(socket: Socket, name: string, limit: number, windowMs: numbe
 export function mountSupportNamespace(io: IOServer): void {
   const ns = io.of("/support");
 
+  // Drop customers' sockets once Support is switched off. While any socket is
+  // connected this re-reads the switch every 5 s (this module instance has its own
+  // cache, separate from the admin route's, so the flip has to be read, not
+  // shared); nothing is read while the namespace is idle.
+  setInterval(() => {
+    if (ns.sockets.size === 0) return;
+    expireFeature("support");
+    isFeatureEnabled("support").then((enabled) => {
+      if (enabled) return;
+      for (const s of ns.sockets.values()) {
+        if ((s.data as { ctx?: ConnContext }).ctx?.isAdmin) continue;
+        s.emit("support:disabled");
+        s.disconnect(true);
+      }
+    }, () => {});
+  }, 5_000).unref();
+
   ns.use(async (socket, next) => {
     const auth = isPlainObject(socket.handshake.auth) ? socket.handshake.auth : {};
     const verified = verifyToken(typeof auth.token === "string" ? auth.token : undefined);
@@ -530,6 +548,14 @@ export function mountSupportNamespace(io: IOServer): void {
     const jwt = isAdmin || safeUserIdFromJwt(verified) ? verified : null;
     if (!isAdmin && !jwt && !guestSessionId) {
       return next(new Error("auth required: provide JWT token or guestSessionId"));
+    }
+    // Ops switch (admin.site → Settings). Agents always get in — they are how a
+    // backlog gets answered; only customers are turned away. A rejection from a
+    // middleware does not auto-retry in the client, so there is no reconnect storm.
+    if (!isAdmin && !(await isFeatureEnabled("support"))) {
+      const err = new Error("support_disabled") as Error & { data?: unknown };
+      err.data = { code: "support_disabled" };
+      return next(err);
     }
     const proto = typeof auth.proto === "number" && Number.isInteger(auth.proto) ? auth.proto : 1;
     const ctx: ConnContext = { jwt, isAdmin, guestSessionId, proto };
@@ -551,6 +577,20 @@ export function mountSupportNamespace(io: IOServer): void {
       timers: [],
     };
     (socket.data as { state: SocketState }).state = state;
+
+    // The switch can flip while a customer's socket is open. Every packet from a
+    // customer is checked against the last value seen (synchronous, so packets
+    // keep their order and nothing is awaited per keystroke); the sweep in
+    // mountSupportNamespace keeps that value fresh and drops the sockets.
+    if (!ctx.isAdmin) {
+      socket.use((packet, next) => {
+        if (peekFeature("support") !== false) return next();
+        const last = packet[packet.length - 1];
+        if (typeof last === "function") ackOf(last)({ ok: false, error: "support_disabled" });
+        socket.emit("support:disabled");
+        socket.disconnect(true);
+      });
+    }
 
     // Identity is only checked at the handshake, so a socket must not outlive
     // its token.

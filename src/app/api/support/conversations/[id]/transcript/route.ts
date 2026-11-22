@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import clientPromise, { appDbName } from "@/lib/mongodb";
 import { verifyToken, resolveIsAdmin } from "@/lib/jwt";
+import { isFeatureEnabled } from "@/lib/featureToggles";
 import { adminStanding, lookupUserNames, personName } from "@/lib/supportNames";
 
 export const runtime = "nodejs";
@@ -58,6 +59,11 @@ export async function GET(
   if (isAdmin && userIdRaw && /^[0-9a-fA-F]{24}$/.test(userIdRaw)) {
     const standing = await adminStanding(db, new ObjectId(userIdRaw));
     if (standing.known && !standing.allowed) isAdmin = false;
+  }
+
+  // Support switched off: customers get nothing here either (agents still do).
+  if (!isAdmin && !(await isFeatureEnabled("support"))) {
+    return NextResponse.json({ error: "support_disabled" }, { status: 503 });
   }
 
   const conversationId = new ObjectId(id);
