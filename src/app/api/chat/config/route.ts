@@ -15,6 +15,7 @@
 import { NextResponse } from "next/server";
 import { isAiEnabled } from "@/lib/aiToggle";
 import { getFeatureFlags } from "@/lib/featureToggles";
+import { aiDraftEnabled, pipelineMode, searchMode } from "@/lib/rag/runtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,8 +25,10 @@ export async function GET() {
   // site that only reads `aiEnabled` keeps working. user.website reads
   // `messagingEnabled` from here too, so its pages and the chat service agree.
   const [aiEnabled, flags] = await Promise.all([isAiEnabled(), getFeatureFlags()]);
+  // Additive: the widget offers its filter buttons from the first screen when the filters pilot is live.
+  const searchControls = pipelineMode() === "v2" && searchMode() === "filters";
   return NextResponse.json(
-    { aiEnabled, supportEnabled: flags.support, messagingEnabled: flags.messaging },
+    { aiEnabled, supportEnabled: flags.support, messagingEnabled: flags.messaging, searchControls, aiDraft: searchControls && aiDraftEnabled() },
     // no-store so an ops flip reaches open browsers within the module's own
     // cache TTL rather than sitting behind a CDN/browser cache.
     { headers: { "Cache-Control": "no-store" } }

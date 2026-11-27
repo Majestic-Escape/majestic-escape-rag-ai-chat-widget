@@ -145,43 +145,58 @@ A good rule of thumb: when you need to find something, start from the route or t
 
 When a user types a message in the widget:
 
-1. **Browser** → POSTs to `user.website` `/api/chat` with `{ message, history, mode, guestSessionId? }` and an optional `Authorization: Bearer <jwt>` header.
+1. **Browser widget** ([src/embed/useChat.ts](src/embed/useChat.ts)) POSTs straight to this service's `/api/chat` (cross-origin) with `{ message, mode, guestSessionId? }` and an optional `Authorization: Bearer <jwt>`. No conversation history is sent: the server keeps what it has understood so far.
 
-2. **user.website proxy** ([user.website/src/app/api/chat/route.ts](../user.website/src/app/api/chat/route.ts)) — forwards the request to this service, attaching `X-Forwarded-For` and `Origin` so rate-limiting and origin checks work correctly.
+2. **The route** ([src/app/api/chat/route.ts](src/app/api/chat/route.ts)) does request plumbing only, in this order:
+   - AI kill-switch (first statement; fail-closed).
+   - Identity and rate limits: 60/min and 200/day per signed-in user, 15/min and 30/day per IP, halved for an untrusted `Origin`.
+   - Validates `message` (string, ≤2000 chars, control bytes stripped). `mode === "support"` returns the canned pointer to the Support tab.
+   - Saves the user message to `ai_chat_messages` (fire-and-forget).
+   - Reads `RAG_PIPELINE`: `safe` (default) answers with a fixed "use site search / Support" text and stops; `shadow` answers the same while running the pipeline silently; `v2` runs the pipeline. One 9-second deadline covers the whole turn, and it also stops when the browser goes away.
+   - Runs the turn under a per-identity lock so one customer's turns are handled one at a time, in order.
 
-3. **This service** [src/app/api/chat/route.ts](src/app/api/chat/route.ts) does, in order:
-   - Reads JWT from `Authorization`. If valid, the rate-limit key becomes `chat:m:user:<userId>`. Otherwise it falls back to `chat:m:ip:<ip>`. Logged-in users get 60 req/min; anonymous IPs get 15 req/min.
-   - Checks daily cap (200 user / 30 IP per 24h). Returns 429 with friendly text on violation.
-   - If the request's `Origin` header is missing or not in `ALLOWED_ORIGINS`, the per-minute and daily caps are halved (defends against scripted abuse).
-   - Parses body, validates `message` (must be string, ≤2000 chars, non-empty after trim), strips control bytes via `sanitizeText`.
-   - If `mode === "support"`, returns a canned redirect response (the user should switch to the Support tab; AI doesn't try to handle support tickets).
-   - Otherwise: persists the **user message** to `ai_chat_messages` (fire-and-forget) so it survives cache wipes.
-   - **Intent gate** ([`route.ts → shouldUseRag()`](src/app/api/chat/route.ts)): conversational fillers (`hi`, `thanks`), policy questions (`cancellation policy`, `refund`), booking-management (`my booking`, `cancel my booking`), and meta (`who are you`) skip vector search entirely and the LLM answers conversationally with no carousel. Discovery messages (everything else) fall through to the RAG pipeline below.
-   - Embeds the query with Gemini's `gemini-embedding-001` model.
-   - Runs Atlas Vector Search against `listingproperties.embedding` with `status: "active"` filter. Top 10 candidates.
-   - Tries to extract a date range from the message + last user history turn. If found, queries `bookings` to mark conflicting properties `partiallyBooked: true`.
-   - Sorts: available first, then by vector score. Slices to top 5.
-   - Builds a context block summarising those 5 properties.
-   - Calls Gemini 2.0 Flash with `BASE_SYSTEM_PROMPT + contextBlock + SAFETY_DIRECTIVE`. Streams tokens back as Server-Sent Events.
-   - On Gemini quota error → falls back to Groq (`llama-3.3-70b-versatile`), then xAI (`grok-3-mini`). Whichever provider answers, the same SSE format is emitted.
-   - When the stream finishes, persists the **model's full reply** to `ai_chat_messages`.
-   - Final `data: [PROPS]<json>\n\n` line carries the property cards the widget renders below the text.
+3. **The pipeline** ([src/lib/rag/pipeline.ts](src/lib/rag/pipeline.ts)):
 
-4. **Browser widget** ([user.website/src/components/ai-chat/useChat.ts](../user.website/src/components/ai-chat/useChat.ts)) — appends each chunk to the visible message bubble.
+   | Stage | What happens | File |
+   |---|---|---|
+   | Fast path | Whole-message greetings, thanks, "start over", and yes/no to a pending question need no model. A filter chip removed in the widget arrives as `op` and is applied without a model. | `understand.ts`, `pipeline.ts` |
+   | No-model reader | A short plain-English search ("villas in goa for 8 with pool") is read by patterns when every word is accounted for and the place resolves exactly; otherwise the model reads it. About 23 % of dev turns, all correct. | `quick.ts` |
+   | Understand | One model call returns JSON describing what this message changes (place, dates, guests, budget, bedrooms, type, amenities, must-haves with no data field, soft wishes). The model sees only the previous requirements and the current message. | `understand.ts`, `llm.ts` |
+   | Check | The JSON is validated strictly, corrected for known misreadings, then cross-checked against the text: every typed number must be used, none invented, a negation must remove something, a budget must be per night, dates must be real, in the future and mentioned. Any failure becomes a clarifying question and the state is left alone. | `understand.ts`, `guards.ts`, `numbers.ts`, `dates.ts` |
+   | State | The change is merged into the customer's search state (`ai_chat_state`, one versioned document per signed-in user or guest id; 30-minute idle expiry). Newest instruction wins. | `state.ts` |
+   | Retrieve | `GET {CATALOG_API_URL}/properties/search-properties` with the place and dates only, paged until every row is in. The response's `search.mode` says whether rows are in the place, merely nearby, or the place was not understood. | `catalog.ts` |
+   | Judge | Every row × every requirement → satisfied / unsatisfied / unknown / unsupported. Confirmed = all satisfied. | `requirements.ts` |
+   | Compose | Templates: the filters line, then the result. Unverifiable must-haves are asked about before anything is shown; nearby stays are labelled alternatives; no result explains exactly which requirement stood in the way. | `reply.ts` |
+   | Validate | The finished reply is re-checked against the evidence (ids, prices, places, groups, availability). A defect means the reply is not sent. | `reply.ts` |
+   | Commit | State (and the ids shown, for "the second one") is saved with a version check. | `state.ts` |
 
-5. **On the next page load**, the widget calls `/api/chat/history` to restore the conversation. Lookup is by `userId` (from JWT) or `guestSessionId` (from the year-long cookie). This is what makes "history doesn't disappear after clearing cache" work. The persisted `ai_chat_messages.properties` field is rehydrated alongside the model reply, so the property-card carousel below each AI message survives reloads identically to the text.
+   Other intents get fixed text: policy questions (a link to the policy page, no figures), the customer's own booking (Support tab), general travel advice (not offered yet). Questions about, or comparisons of, stays already shown are answered from the listings' own fields ([inquire.ts](src/lib/rag/inquire.ts)).
 
-6. **Property cards UI** — the model reply renders a horizontal snap-carousel of portrait property cards (in `src/embed/ChatWidget.tsx → PropertyCarousel`). Centred card sits at full scale; neighbours fade to `scale-95 opacity-80`. Touch-swipe on mobile, drag + chevron buttons on desktop ≥768px, dot indicator below. Final tile is a "See all matching stays" link to `/stays`. **The carousel intentionally caps at 8 cards** — users who want every match tap the trailing "See all matching stays" tile which routes to `/stays?q=…` on the consumer site for the full result set. Server-side filter: only candidates with vector score `> 0.65` are surfaced as cards (the LLM's grounding context still uses the full top-8 so it has options when summarising). Below 0.65 the match is not confident enough to be promoted as a recommendation.
+4. **The reply** is sent as Server-Sent Events in the widget's existing format: the text (newlines escaped), then `data: [PROPS]<json>` with up to 8 cards, then `data: [DONE]`. Text goes first because the widget hides a reply until it has text. The reply and its cards are saved to `ai_chat_messages`; saved cards carry `availability: "recheck"`, never `"available"`.
+
+   Bundles that send `caps: 1` also get `data: [META]{...}` lines: first `{"status":"Reading your message…"}` / `{"status":"Searching stays…"}` (shown in the typing bubble), then `{"filters":[…],"heading":"…"}` (removable chips with a Clear action, and the group heading above the cards). For them the text omits the filters line, which the chips replace. Older bundles never receive `[META]` and keep the filters line as the first line of text, so they render correctly unchanged.
+
+5. **On the next page load**, the widget calls `/api/chat/history` to restore the conversation by `userId` (JWT) or `guestSessionId` (year-long cookie), cards included. The widget always sends its guest id. When a sign-in token is sent but does not verify (expired, or left behind after sign-out), both routes use a guest id derived from that token (`guestIdForUnverifiedToken` in `state.ts`): that visitor keeps their memory and history, and the next plain guest on the same browser cannot restore them.
+
+6. **Property cards UI** — a horizontal snap-carousel of portrait cards (`src/embed/ChatWidget.tsx → PropertyCarousel`), at most 8, followed by a "Browse all stays" tile linking to `/stays`. A card can carry a badge: "Available for your dates" (from this reply's dated search), "Recheck availability" (restored from history), or a note such as "9 km from Panaji" or "Not verified: private pool". Prices read "/night · excl. taxes".
+
+### What the assistant will not do
+
+- State a total price, taxes or fees — `server.me` has no quote endpoint.
+- Promise availability — it reports what a dated search returned in that reply; booking confirms.
+- Treat a requirement it cannot check (private pool, pet-friendly, wheelchair access, distance to a beach) as met.
+- Show anything a model wrote.
 
 ### What can go wrong here
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
-| 401 on `/api/chat` | Missing/expired JWT — but the route doesn't actually require auth, so this only happens if you sent garbage | [route.ts](src/app/api/chat/route.ts) JWT decode block |
-| 429 immediately | Rate-limit bucket from prior abuse still active | [rateLimit.ts](src/lib/rateLimit.ts) — buckets reset on process restart |
-| Empty replies / "let me look that up" | Atlas Vector Search index missing or mis-named | Atlas console → indexes on `listingproperties` |
-| `Stream error: AI not available` | All three providers returned errors (Gemini quota + Groq + xAI all down) | check provider dashboards; verify keys in env |
-| `No specific properties found` | The `embedding` field is missing from `listingproperties` | run `POST /api/admin/embed-all` once |
+| Every reply is "Stay search by chat is being upgraded…" | `RAG_PIPELINE` is unset or `safe` | Railway env |
+| "I couldn't process that just now" | Both model attempts failed (retired model id, timeout, bad JSON) | log line `{"t":"rag", …, "llm":{…}}`; `LLM_CHAIN` |
+| "I'm getting a lot of questions right now" | `DAILY_AI_LIMIT_GLOBAL` reached, or the `ai_usage` counter is unreadable | `ai_usage` collection |
+| "Search is temporarily unavailable" | `server.me` search returned a non-200 or an unexpected shape | `CATALOG_API_URL`; `npm run verify:rag` against a fresh `node scripts/capture-search-contract.mjs` |
+| A clarifying question after a clear message | A cross-check was too strict for that phrasing | add the message to `eval/golden/dev`, then `npm run eval:rag -- --live --only <id>` |
+| 429 immediately | Rate-limit bucket still active | [rateLimit.ts](src/lib/rateLimit.ts) — buckets reset on process restart |
 
 ---
 

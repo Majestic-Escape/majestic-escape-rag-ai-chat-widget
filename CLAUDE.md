@@ -7,7 +7,16 @@ You're working on `majestic-escape-rag-ai-chat-widget` — a Next.js 15 service 
 | Path | What it is | When to touch |
 |---|---|---|
 | `server.ts` | Boots Next.js + Socket.IO + workers (Change Stream, catch-up sync). Single entrypoint for `npm run dev` / `npm start`. | Adding new sockets, workers, or top-level lifecycle hooks. |
-| `src/app/api/chat/route.ts` | RAG: embed user message → Atlas Vector Search → Gemini 2.0 Flash stream (Groq + xAI fallback). **Intent gate** decides RAG vs conversational reply. | AI-mode behaviour, prompt edits, fallbacks. |
+| `src/app/api/chat/route.ts` | Kill-switch → rate limits → validation → the search pipeline (`src/lib/rag`) behind `RAG_PIPELINE` (`safe` \| `shadow` \| `v2`). Writes the SSE reply. | Request plumbing only. Search behaviour lives in `src/lib/rag`. |
+| `src/lib/rag/pipeline.ts` | One chat turn: fast path → understand → merge state → retrieve → judge → compose → validate → commit. Everything injected. | The order of the stages. |
+| `src/lib/rag/understand.ts` | The extraction prompt, strict validation of the model's JSON, cross-checks against what the customer typed, the state merge. | What the assistant understands; new requirement fields. |
+| `src/lib/rag/guards.ts`, `numbers.ts`, `dates.ts` | Deterministic corrections for misreadings seen in live evaluation; the numbers a customer typed; India-time calendar dates. | A new misreading pattern (add the case to `eval/golden/dev` first). |
+| `src/lib/rag/requirements.ts` | Listing × requirement → satisfied / unsatisfied / unknown / unsupported. Pure. | Any rule about what counts as a match. |
+| `src/lib/rag/catalog.ts` | Client for `server.me`'s public search: paging, mode classification, typed failure. | The backend contract. |
+| `src/lib/rag/reply.ts` | Every customer-visible sentence of a search reply (templates) and the final validator. | Wording, cards, policy links. |
+| `src/lib/rag/inquire.ts` | Questions about / comparisons of stays already shown. | New askable facts. |
+| `src/lib/rag/state.ts`, `llm.ts`, `runtime.ts` | Versioned per-identity state (`ai_chat_state`); two-attempt model client; production wiring (env, Mongo, daily cap in `ai_usage`). | State storage, providers, env. |
+| `eval/`, `scripts/verify-rag.ts`, `scripts/eval-rag.ts` | Golden conversations, saved API responses, the pure checks and the live evaluation. | Before and after any change to `src/lib/rag`. |
 | `src/app/api/chat/history/route.ts` | Restores prior AI exchanges including the property-card array on reload. | History persistence. |
 | `src/lib/supportSocket.ts` | The `/support` Socket.IO namespace: connection auth, conversation lifecycle, atomic auto-ack, typing authz, rating, archive write. | Anything user↔admin chat related. |
 | `src/lib/embedder.ts` | Gemini embedding + raw MongoDB writes. Bypasses Mongoose. `EMBEDDER_VERSION` gates re-embedding. | Vector index logic, prose builder. |
@@ -43,6 +52,13 @@ npm run atlas:create-index  # idempotently create the listing_vector_index
 npm run verify:support        # /support socket contract (real namespace, LOCAL Mongo replica set)
 npm run verify:support-client # widget thread/outbox rules (pure, no server)
 npm run verify:support-routes # transcript + delete routes (LOCAL Mongo)
+npm run verify:rag            # search pipeline: pure checks (no network, no model) — run after ANY edit under src/lib/rag
+npm run eval:rag              # golden conversations, replaying recorded answers
+npm run eval:rag -- --live    # …against the real model and catalogue (costs a little; says something about the model)
+npm run eval:rag -- --live --set heldout7  # release gate only: never read or tune against eval/golden/heldout*
+bash scripts/regress.sh                    # free replay of every recorded answer (dev + reg-h3 / reg-h4), no model calls
+npx tsx scripts/review-failures.ts --set reg-h4 eval/reports/reg-h4-<chain>-r1.json   # first wrong turn per failed conversation, by cause
+npx tsx scripts/compare-runs.ts --set dev-fresh old=<report.json> new=<report.json>    # two runs on the same cases, by group (accuracy, unnecessary questions, carried-over mistakes)
 ```
 
 There's no `npm test` or lint config beyond `next lint`. The `verify:*` scripts are standalone checks: the Mongo ones need a LOCAL replica set (default `mongodb://127.0.0.1:27417/?replicaSet=rs0`, override with `SUPPORT_VERIFY_MONGODB_URI`), refuse remote/SRV URIs, create a uniquely named database and drop only that one. `SUPPORT_VERIFY_ONLY=<group>` runs one group of `verify:support`. UI verification is done by driving `localhost:3000/stays` (user.website) and `localhost:3001/dashboard/support-chat` (admin.site) via Playwright MCP.
@@ -102,14 +118,25 @@ The client's `useSupportChat → toLocal()` decides:
 
 If you add a new `SystemKind`, decide which bucket it belongs in and update `toLocal()`.
 
-### The intent gate (`shouldUseRag`) is critical
+### The search pipeline (`src/lib/rag`) — the rules it rests on
 
-In `src/app/api/chat/route.ts`, `shouldUseRag(message)` decides whether to run vector search and surface property cards. It uses heuristics (no LLM) for speed. When `false`:
-- `embedQuery + vectorSearch` are skipped (cost win)
-- `cardData` stays empty → no `[PROPS]` SSE event
-- `CONVERSATIONAL_DIRECTIVE` is appended to the system prompt so the LLM doesn't leak property names from history
+The assistant does not "find similar stays" any more. It asks `server.me`'s public search for the place and the dates, then checks every returned stay against every requirement in code, and writes the reply from templates. Seven rules; each one was a defect in the old path or a measured trap in the backend:
 
-If you change the prompt or add new query categories, update **both** the heuristic regexes AND the conversational directive's bullet list to keep them in lockstep.
+1. **No model text reaches a customer.** The model returns one JSON object describing what the message changes; `validateProposal` and `crossCheck` decide whether to believe it. Replies are templates in `reply.ts`. Do not add a "let the model phrase it" step without a gate in `eval/`.
+2. **A stay is a match only when every mandatory requirement is `satisfied`.** Missing data is `unknown`; a requirement no field can prove ("private pool", "pet-friendly") is `unsupported`. Neither is ever shown as a match — the customer is asked first (`possible_ask` → "yes" → `possible_shown`, labelled "not verified"). Never weaken a requirement to make results appear.
+3. **Send the backend only the place and the dates.** Its other filters are dropped or inverted without an error (`placeType=entire` → both, `pets=true` → *no-pets* listings, a lone date ignored, unknown names ignored). `eval/contract/` holds real responses proving it; `npm run verify:rag` reads them.
+4. **Rows are in-place only for `search.mode` `place` / `text`.** `nearby` means the backend widened the place by itself (stays up to 250 km away) — those are labelled alternatives. `all` after a place was sent means the place was not understood. An unknown mode is a failure.
+5. **Page until every row is in (`limit=50`, max 4 pages).** The default page is 16. A capped or short result is `incomplete`, and any non-200 is `failed` — neither is ever worded as "no stays".
+6. **State is per identity, versioned, and committed in arrival order.** The route holds `withKeyLock` per identity; `ai_chat_state` commits name the `rev` they read. A guest's state is never carried into an account. Only the previous state and the current message go to the model — no history, no listing text.
+7. **Availability is said only from a dated search made in the same turn**, as "available when checked just now — confirmed at checkout". Saved cards are stored as `recheck`. Prices are the nightly base price, "before taxes and fees": `server.me` has no quote endpoint, and its own pricing comment says the site's display formulas differ.
+
+8. **A follow-up is an explicit change to the current search.** A first message is read with `UNDERSTAND_SYSTEM` (compact: the values it sets); once a search exists, `UNDERSTAND_FOLLOWUP` returns a change list (`set` / `add` / `remove`, each with `said`, the customer's own words). Code applies only the listed changes, so everything else carries forward. A removal is applied only when its quoted words are in the message and name the requirement (`judgeRemovals`: field vocabulary or the current value); an unnamed removal beside another change is dropped, an unnamed removal on its own gets one focused question. A doubtful reading gets one focused question showing the resulting search (`confirmQuestion`, pending `confirm`); nothing is applied until "yes". Values stay in the customer's words (`ownWords`). Group sizes and stay dates are arithmetic in code (`headcount`, `completeDates`). (Example phrasings live in `scripts/verify-rag.ts`, groups `candidate-3` and `change-list`, not here: this file is loaded into every agent's context, including independent test authors.)
+
+9. **Filters mode is the default (`RAG_SEARCH_MODE=filters`).** The guest sets the search with the widget's filter buttons and editor; each change is an op (`{set, unset, remove, unsupported, soft, reset}`) the pipeline applies with `validateProposal` + `applyDelta` and never a model call (an op that changes nothing ends without one). A typed message is at most a draft (`RAG_AI_DRAFT=on`): the reading is shown line by line (`draftOf`), nothing is committed, and the guest's Apply sends the chosen lines' ops. If the model fails, the reply says so and the filters stay. Dates are neither searched nor kept while `RAG_DATED_SEARCH` is off (A9). Buttons have their own per-minute limit and do not count against the daily AI limit. A bundle older than `caps: 2` gets the safe reply. `chat` mode (reading applied directly) is held to the release gates.
+
+Three places name the intents and must stay in lockstep: the fast-path regexes and the `INTENTS` list in `understand.ts`, and the `switch` in `pipeline.ts`.
+
+`RAG_PIPELINE` defaults to `safe` (a fixed "use site search / Support" reply, no model) and that is the rollback target. The pre-pipeline retrieval is kept only as a measurement baseline in `eval/baseline/v1.ts` — it is not a mode, and must never be wired back in as a fallback: it cannot enforce a budget.
 
 ### Admin determination is database-driven
 
@@ -121,7 +148,7 @@ The chatbot only embeds and surfaces properties whose `status === "active"`, mir
 
 1. **Embed time** — `embedAndSaveProperty` in `src/lib/embedder.ts` early-returns and **unsets** the embedding when `status !== "active"`. So flipping a property to inactive in `server.me` propagates via the change stream and removes it from search within seconds.
 2. **Boot time** — `runCatchUpSync` in `src/workers/catchUpSync.ts` only iterates `{ status: "active" }` documents.
-3. **Search time** — the `$vectorSearch` stage in `src/app/api/chat/route.ts` includes `filter: { status: ACTIVE_STATUS }` so even a stale embedding cannot leak through.
+3. **Search time** — chat results now come from `server.me`'s public search, which applies the site's own rule (`status: "active"` and not banned), and `requirements.ts` re-checks `status` on every row. The embeddings are still maintained by layers 1 and 2 (for a future semantic ordering step); if `$vectorSearch` is ever used at request time again it must carry `filter: { status: "active" }`.
 
 If you ever broaden visibility (e.g. include `pending` or `archived` properties), update all three in the same change. Touching one creates a silent inconsistency that's hard to spot in tests.
 
@@ -132,7 +159,7 @@ AI assistant off when the business is closed, so Gemini/Groq/xAI stop costing
 money. Three things make it real rather than cosmetic:
 
 1. **`src/app/api/chat/route.ts` checks it before anything else** — before the
-   rate limiter, `embedQuery`, `$vectorSearch` and every provider hop. The widget
+   rate limiter, the search-state read, the model call and the catalogue search. The widget
    bundle is loaded cross-origin and anyone can POST directly, so this check is
    the only actual spend guarantee. Do not move it below the rate limiter "for
    consistency": `isAiEnabled()` is cache-backed and cheaper than the limiter's
@@ -390,11 +417,15 @@ Railway's Nixpacks build only ARGs Railway-system vars (`RAILWAY_*`, `CI`, etc.)
 
 ### AI provider fallback chain — cascade contract
 
-`src/app/api/chat/route.ts` runs `Gemini → Groq → xAI` as primary → fallback → fallback. The contract is: **each provider hop must wrap its call in try/catch and fall through to the next provider if no tokens have been emitted yet** (`assembledReply.length === 0`). Once a token has reached the client we can't roll back, so post-token failures surface as errors. Currently the cascade kicks in for: (a) Gemini error with `status === 429`, (b) Groq fetch failure (4xx/5xx) before its first chunk is parsed. Don't simplify the inner try/catch around Groq — without it, a Groq 401 (e.g., from a misconfigured prod env var) silently bypasses xAI and hits the user as a generic "trouble connecting" message. The outer catch logs `[chat/route] Stream error (provider=%s, assembled=%d chars)` so an operator can tell whether all three hops failed vs a single one bombed.
+`src/lib/rag/llm.ts` walks the ordered chain in `LLM_CHAIN` (`provider:model,…`; default in `runtime.ts`, the proposed production routing: Groq `openai/gpt-oss-120b`, then `qwen/qwen3.8-27b`; Hindi / Hinglish the reverse) and makes **at most two model attempts that can take time per request**; a rate-limit refusal (429, answered at once) does not use one up, so a chain whose first models are out of quota still reaches the next one (measured in the 2026-11-27 browser check: with both Groq models at their daily cap, the third entry was never tried). The next entry is tried on **any** failure (HTTP error, timeout, text that is not JSON), not just 429: the models this service was first built on were retired, and a retired model answers 404. Per-entry circuit breakers skip a model that answered 429 (for the provider's retry delay), 401/403/404 (10 min) or failed 3 times in a row (30 s). Only models named in the chain are ever called; nothing switches to a paid model by itself. Each attempt is reserved against the daily cap (`ai_usage`, in the database so a restart cannot reset it; an unreadable counter refuses the call) and has its own timeout under the route's single 9-second deadline. If no attempt succeeds the customer gets "busy" (quota) or "I couldn't process that" (failure); an answer that is valid JSON but unusable (e.g. `{}` to an injection attempt) gets "I'm not sure I understood". No search runs on stale state.
 
-### Multi-turn date carry-over scans last 5 user turns
+Free tiers (dev keys, measured 2026-11-26): Groq ~1,000 requests and 200,000 tokens per day **per model** (≈120 messages per model per day at ~1,600 tokens each); Gemini 500 requests per day per model, often 503. Groq's terms bar training on inputs and keep none by default; Gemini's **unpaid** tier allows human review of inputs, so it is not in the default chain. `gemini-2.5-flash-lite` is closed to new keys (404); gpt-oss models need `reasoning_effort: "low"` for JSON mode (set in `llm.ts`). Re-run the live benchmark (`eval/README.md`) before changing the chain.
 
-`src/app/api/chat/route.ts`'s booking-aware filter builds `dateRangeText` from the current message + last 5 user turns. The window matters: a user typing "next weekend" → small talk → "show me villas" needs the date filter to still apply on the third message. Don't shrink to `slice(-2)`; a 2-turn window misses common conversation depth and the booking-availability flag stops working mid-conversation. Don't grow much past 5 either — `MAX_HISTORY_TURNS=12` caps total turns at 12 (~6 user) so 5 already covers most of the available context.
+Optional `LLM_CHAIN_HINGLISH` routes Hindi / Hinglish messages (any Devanagari, or one word from the list in `llm.ts` that is never English) to a second chain with the same two-attempt and breaker rules (`routeChain`). The router reads the current message only, so an English follow-up in a Hinglish conversation goes to `LLM_CHAIN`. With `LLM_CHAIN` set and this unset, one chain serves everything; with both unset, the code default routing applies.
+
+### Dates are India's, and they live in the search state
+
+`src/lib/rag/dates.ts` computes "today" in `Asia/Kolkata` — never from the server clock (Railway runs in UTC, which is still yesterday in India until 05:30). Dates stay in the per-identity search state until the customer changes them, the state expires (30 idle minutes), or they pass (`revalidate` drops them and the reply says so). The model resolves relative dates from the India date it is given; `crossCheck` refuses dates from a message with no time word, past dates, a lone date, and impossible dates.
 
 ### Input `maxLength` mirrors server `MAX_MESSAGE_CHARS`
 
@@ -419,7 +450,7 @@ If you ever simplify the `disconnect` handler back to `setIsConnected(false)`-on
 
 ### Atlas Vector Search `filter` requires the field be indexed as `type: "filter"`
 
-The `$vectorSearch` stage at `src/app/api/chat/route.ts` filters on `{ status: ACTIVE_STATUS }`. For that filter to actually narrow results, the **Atlas vector index** must include `status` as a `type: "filter"` field — not just the vector field. The index creator script (`scripts/createVectorIndex.js`) includes it; the prod cluster's index was manually created via the Atlas UI without the filter field at one point and silently returned **zero** results for every search (the AI then hallucinated property names from its training, which looked like a totally different bug). If a new cluster is provisioned, run `npm run atlas:create-index` against it — don't hand-create the index in the UI.
+The chat route no longer runs `$vectorSearch` (results come from `server.me`'s search — see "The search pipeline"), but the index and the embeddings are still maintained, and any future `$vectorSearch` must filter on `{ status: "active" }`. For that filter to actually narrow results, the **Atlas vector index** must include `status` as a `type: "filter"` field — not just the vector field. The index creator script (`scripts/createVectorIndex.js`) includes it; the prod cluster's index was manually created via the Atlas UI without the filter field at one point and silently returned **zero** results for every search (the AI then hallucinated property names from its training, which looked like a totally different bug). If a new cluster is provisioned, run `npm run atlas:create-index` against it — don't hand-create the index in the UI.
 
 ### Gemini embedding-model access is per-Google-project, separate from text generation
 

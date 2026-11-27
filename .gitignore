@@ -82,3 +82,14 @@ tmp/
 
 # ─── Vercel / deploy ─────────────────────────────────────────────────────────
 .vercel
+
+# ─── Evaluation scratch ──────────────────────────────────────────────────────
+# Recorded model + catalogue answers stay local (their file names pass Windows' path limit);
+# re-create them with `npm run eval:rag -- --live`. Run outputs and the sealed held-out sets are never committed.
+eval/.cache/embeddings.json
+eval/.cache/*.txt
+eval/recordings/
+eval/reports/
+eval/golden/heldout*/
+eval/archive/
+eval/ranking/

@@ -1,0 +1,7 @@
+{
+ "dbUri": "mongodb://127.0.0.1:27417/rag_rig_d377f7c7?replicaSet=rs0",
+ "dbName": "rag_rig_d377f7c7",
+ "today": "2026-11-27",
+ "seededAt": "2026-11-27T18:12:57.096Z",
+ "liveHoldExpiresAt": "2026-11-27T18:42:57.096Z"
+}

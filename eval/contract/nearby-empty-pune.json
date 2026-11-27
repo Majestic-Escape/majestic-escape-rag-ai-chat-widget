@@ -1,0 +1,28 @@
+{
+ "version": 1,
+ "query": "location=pune&limit=50",
+ "status": 200,
+ "body": {
+  "data": [],
+  "pagination": {
+   "totalCount": 0,
+   "totalPages": 0
+  },
+  "search": {
+   "mode": "nearby",
+   "query": "pune",
+   "place": {
+    "id": "gn:1259229",
+    "name": "Pune",
+    "type": "city",
+    "label": "Pune Division, Maharashtra"
+   },
+   "propertyType": null,
+   "corrected": false,
+   "alternatives": [],
+   "reason": "no_inventory",
+   "nearestKm": null,
+   "suggestions": []
+  }
+ }
+}

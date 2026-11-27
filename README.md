@@ -33,12 +33,11 @@ OPEN / PENDING / RESOLVED status pills colour-coded; mobile collapses the conver
 
 ## What this service does
 
-1. **AI chat (`/api/chat`)** — Streams answers from Gemini 2.0 Flash (with Groq + xAI fallbacks
-   on quota errors). RAG against the `listingproperties` MongoDB Atlas Vector Search index;
-   booking-aware filtering against the `bookings` collection. An intent gate
-   (`shouldUseRag()`) skips RAG for greetings, policy questions, booking
-   management, and meta turns — those get short conversational replies with
-   no carousel. See `ARCHITECTURE.md` §Operational guards.
+1. **AI chat (`/api/chat`)** — A stay-search assistant. One small model call reads what the
+   customer asked for; the stays themselves come from `server.me`'s public search (place + dates),
+   every requirement is checked in code, and the reply is written from templates — no model text
+   reaches the customer. Behind `RAG_PIPELINE` (`safe` by default). See `ARCHITECTURE.md` §4 and
+   `CLAUDE.md` "The search pipeline".
 2. **Embedding maintenance** — A long-lived MongoDB Change Streams worker watches
    `listingproperties` for inserts/updates/deletes and re-embeds within ~1s. A
    `runCatchUpSync` job runs at boot to reconcile any missed changes.
@@ -61,9 +60,9 @@ OPEN / PENDING / RESOLVED status pills colour-coded; mobile collapses the conver
    message goes to `support_chats_archive`, so reloads, sign-ins from a new
    device, and admin transcript exports all see the full history.
 
-This service does **not** depend on `server.me` — it writes the `embedding` and
-`embeddingUpdatedAt` fields to `listingproperties` via the raw MongoDB driver,
-bypassing Mongoose entirely.
+The AI chat calls `server.me`'s public search API at request time (`CATALOG_API_URL`). Embedding
+maintenance does not: it writes the `embedding` and `embeddingUpdatedAt` fields to
+`listingproperties` via the raw MongoDB driver, bypassing Mongoose entirely.
 
 ### Integrating the chat on a consumer site
 

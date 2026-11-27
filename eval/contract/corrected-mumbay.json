@@ -1,0 +1,28 @@
+{
+ "version": 1,
+ "query": "location=mumbay&limit=50",
+ "status": 200,
+ "body": {
+  "data": [],
+  "pagination": {
+   "totalCount": 0,
+   "totalPages": 0
+  },
+  "search": {
+   "mode": "nearby",
+   "query": "mumbay",
+   "place": {
+    "id": "gn:1275339",
+    "name": "Mumbai",
+    "type": "city",
+    "label": "Maharashtra"
+   },
+   "propertyType": null,
+   "corrected": true,
+   "alternatives": [],
+   "reason": "no_inventory",
+   "nearestKm": null,
+   "suggestions": []
+  }
+ }
+}

@@ -1,0 +1,29 @@
+# Requirements → tests
+
+Where each requirement of the search assistant is checked, and what is **not** checked yet. "verify" = a group in `scripts/verify-rag.ts` (pure, deterministic). "rig" = `scripts/verify-rag-backend.ts` against an isolated local `server.me` (worktree at the production commit, local Mongo replica set, synthetic fixtures). "eval" = `scripts/eval-rag.ts` on the golden sets (live model). "browser" = the real widget on the production-identical customer site (`user.website`, run locally) with Playwright.
+
+| Requirement | Checked by | Not covered yet |
+|---|---|---|
+| Every mandatory requirement is enforced on every shown stay | verify `requirements`, `requirements-invariants` (4,000 generated cases against an independent oracle); rig `requirements` (84 fixture listings); eval re-judges every card | — |
+| Unknown or unsupported is never shown as satisfied | verify `requirements`, `requirements-invariants`, `pipeline`; browser (consent question, "Not verified: private pool" badges and heading) | — |
+| No relaxation without consent | verify `pipeline`, `understand`; browser ("villa in goa with a private pool" → question → "Yes please" → labelled cards) | "no" followed by a rephrase, with a live model |
+| Numbers, negations, budget basis and dates are checked against the text | verify `numbers`, `understand`, `guards`, `review-regressions`; eval `budget`, `dates`, `hinglish`, `hindi` | number words above fifty; mixed scripts in one message |
+| Newest instruction wins; nothing stale overwrites it | verify `understand`, `pipeline` (version conflict); rig `state` (two turns at once, no lock: exactly one asks for a resend; abort mid-turn leaves whole state); browser: two tabs of one guest sending at the same instant (turns ran in order, versions 13 then 14, the second applied on top of the first, both requirements kept) | two browser instances on different machines |
+| State is isolated per identity; forged ids get none | verify `pipeline`; rig `state` | sign-in / sign-out / account switch in a browser |
+| Retrieval is complete; incomplete is never "no match" | verify `catalog`; rig `contract` (paging at 16 / 50, a 56-listing place) | a real catalogue above 200 listings in one place |
+| Rows the backend widened are never matches | verify `catalog`, `pipeline`; rig `contract` | — |
+| Backend contract | verify `catalog` (12 saved real responses); rig `contract` (23 checks against the real backend code) | — |
+| Availability only from this turn's dated search; history says "recheck" | verify `pipeline`, `inquire`; rig `availability` (bookings, back-to-back, live and expired holds, cancellations, host blocks, imported calendars, delisted listing, month and year end: search agrees with `check-dates`); browser (dated search wording; "Availability was checked when this was sent. Please recheck." after reload) | **open defect in `server.me` (case A9)**: a night freed from a host block but still covered by an imported calendar is offered by search and refused at booking |
+| India-time dates; real dates; year roll-over; relative dates; length changes | verify `dates`, `guards` | — |
+| Base price only, never a total | verify `pipeline`, `inquire`; browser ("/night · excl. taxes") | — |
+| A failure is never "no stays" | verify `catalog`, `pipeline`, `inquire` | catalogue down while the browser is open |
+| Every intent is grounded | verify `pipeline`, `inquire`; eval `intent`, `hostile`; browser (policy link) | adversarial set for general travel chat (the feature is off) |
+| At most two model attempts; fallback on any failure; circuit breakers; daily cap | verify `llm` (20 checks) | the database counter across a restart; the 9-second deadline through the route with a hanging provider |
+| Final validation stops a wrong reply | verify `pipeline` (7 tampered replies) | — |
+| Defects found by the reviews and live runs stay fixed | verify `review-regressions`, `review-regressions-flow`, plus the 2026-11-26 group in `understand` | — |
+| Kill-switch flipped mid-turn | script against the local service (`evidence/rag-v2/killswitch-midturn.txt`): the turn in flight finishes whole; new turns are still served for up to 12 s (the switch cache), then refused with `ai_disabled`, history too; browser: the widget hides the AI tab and shows the Support sign-in | a model-path turn inside the 12 s window (none was made) |
+| Kill-switch, feature switches, support chat unchanged | `verify:ai-toggle` 9/9, `verify:feature-toggles` all, `verify:support` 115/115, `verify:support-client` 26/26, `verify:support-routes` 12/12 (2026-11-26, current code) | kill-switch flipped while a turn is running |
+| Widget on the real site | browser on `user.website` at 1366, 768 and 390 px: chips, chip removal without a model call, Clear, group headings, "Reading your message…" / "Searching stays…" status, consent flow, dated search, policy link, keyboard reach of chips (focus returns to the message box), history restore after reload, the previous production bundle against the new server (plain text with the filters line, cards, no raw markers) | a real screen reader (none installed; Chrome accessibility tree and live-region additions checked instead: the announcer speaks the status, then the reply sentences plus "N stays are shown below"; restored history is not read out; cards read "Sleeps 8, 4 bedrooms"); Escape-to-close was not confirmed in the scripted run |
+| Rollback is safe | verify `modes` | the `safe` reply through the route and the browser |
+| Performance | rig `perf` (200 scripted turns, local, noisy machine); eval model latency per call | p95 under real network latency to the production API with a live model, end to end |
+| Old retrieval baseline | `scripts/eval-baseline.ts`: a violating stay in 83.6 % of search turns | the old model's wording (that model is retired) |
