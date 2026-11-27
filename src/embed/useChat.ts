@@ -5,7 +5,7 @@ import { getAuthToken, getBackendUrl, getOrCreateGuestId } from "./utils";
 const AI_GREETING: Message = {
   id: "init-ai",
   role: "model",
-  text: "Hi there! I'm Majestic AI ✨ — here to help you find the perfect stay or answer questions about your booking. What are you looking for?",
+  text: "Hi there! I'm Majestic AI ✨ I'll help you find the perfect stay.",
   timestamp: new Date(),
   isSupport: false,
 };

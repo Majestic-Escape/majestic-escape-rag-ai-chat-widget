@@ -1160,6 +1160,11 @@ const PANEL_GONE_MS = PANEL_EXIT_MS + 150;
 // viewport; the browser toolbars that slide in and out take less.
 const KEYBOARD_MIN_PX = 150;
 
+// After anything that moves the keyboard, the visible area is re-read every
+// frame for this long: Android Chrome (2026) can send its last viewport event
+// before the keyboard has settled, and the panel then kept a stale size.
+const VIEWPORT_SETTLE_MS = 1000;
+
 // A support (re)connect quicker than this doesn't show "Connecting…". Every
 // open reconnects, and an ordinary one shouldn't flash the header: measured
 // from India against production, the socket opens 0.8–2.3 s after the tap
@@ -1779,15 +1784,43 @@ export const ChatWidget: React.FC = () => {
       panel.toggleAttribute("data-typing", keyboardUp);
     };
     update();
+    // Events alone are not enough: on the owner's phone (Android Chrome, Nov
+    // 2026) the last one could arrive while the keyboard was still moving, and
+    // the panel kept that size (the message box behind the keyboard, or a gap
+    // above it after switching fields). So every event also re-reads the
+    // visible area each frame for VIEWPORT_SETTLE_MS, applying it only when it
+    // moved. Focus is not part of the reading: updating on a blur alone would
+    // re-measure the resting size while the keyboard is still up.
+    let settleFrame = 0;
+    let settleUntil = 0;
+    let applied = "";
+    const reading = () => `${vv.height}|${vv.offsetTop}|${window.innerWidth}`;
+    const tick = () => {
+      settleFrame = 0;
+      const now = reading();
+      if (now !== applied) {
+        applied = now;
+        update();
+      }
+      if (performance.now() < settleUntil) settleFrame = requestAnimationFrame(tick);
+    };
+    const onChange = () => {
+      applied = reading();
+      update();
+      settleUntil = performance.now() + VIEWPORT_SETTLE_MS;
+      if (!settleFrame) settleFrame = requestAnimationFrame(tick);
+    };
+    applied = reading();
     // Safari fires `scroll` (not `resize`) when the keyboard opens on input
     // focus; Android Chrome fires `resize`. Listen to both for cross-OS cover.
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
-    mql.addEventListener("change", update);
+    vv.addEventListener("resize", onChange);
+    vv.addEventListener("scroll", onChange);
+    mql.addEventListener("change", onChange);
     return () => {
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
-      mql.removeEventListener("change", update);
+      cancelAnimationFrame(settleFrame);
+      vv.removeEventListener("resize", onChange);
+      vv.removeEventListener("scroll", onChange);
+      mql.removeEventListener("change", onChange);
       settleTimerRef.current = setTimeout(() => {
         host.style.removeProperty("--mc-vvh");
         host.style.removeProperty("--mc-vvtop");
@@ -1954,7 +1987,12 @@ export const ChatWidget: React.FC = () => {
           and focusable — at once. While typing on a
           phone it goes edge to edge (`data-typing`) — a single snap with the
           keyboard's own resize, nothing animated on top of it. `data-typing`
-          is set by the visual-viewport effect, never by React. */}
+          is set by the visual-viewport effect, never by React. While typing,
+          a white shadow continues the panel 120 px down: Android Chrome with
+          its address bar at the bottom reports a visible area shorter than
+          it shows (28 px on a Pixel, ~55 px on the owner's phone, Nov 2026),
+          and the page showed through under the panel. Where the report is
+          right, the shadow is behind the keyboard. */}
       <div
         ref={panelRef}
         role="dialog"
@@ -1970,6 +2008,7 @@ export const ChatWidget: React.FC = () => {
           max-lg:h-[calc(var(--mc-vvh,100dvh)-16px)]
           data-[typing]:left-0 data-[typing]:right-0 data-[typing]:top-[var(--mc-vvtop,0px)]
           data-[typing]:max-lg:h-[var(--mc-vvh,100dvh)] data-[typing]:rounded-none data-[typing]:border-transparent
+          data-[typing]:shadow-[0_120px_0_0_#fff]
           data-[typing]:pl-[env(safe-area-inset-left)] data-[typing]:pr-[env(safe-area-inset-right)]
           lg:inset-auto lg:bottom-24 lg:right-6 lg:top-auto
           lg:w-[400px] lg:h-[760px] lg:max-h-[86vh] lg:max-w-[calc(100vw-2rem)]
