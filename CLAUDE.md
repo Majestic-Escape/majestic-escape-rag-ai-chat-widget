@@ -320,6 +320,32 @@ above the launcher's band (without it the WhatsApp link was partly covered on
 320 px phones). If another site embeds this widget, give its footer the same
 clearance.
 
+### The launcher mascot greets once per page load, then only blinks
+
+`src/embed/Mascot.tsx` draws the launcher: an orb whose visor and sparkle eyes
+are projected onto the sphere (`geometry()`), so a head turn curves and hides
+them like a real ball. The owner's rules, each asserted by
+`tests/pw-final/mascot-check.cjs` on Chromium, WebKit and Firefox and by
+`npm run verify:mascot` (pure math):
+- **The greeting (spin in 180° from the back, look around, nod with peak eyes,
+  ~6.7 s) plays once per page load** (`greetedThisLoad`, module scope): not
+  again on client-side navigation, a hidden route and back, or after the panel
+  closes. Interrupted (panel opened, host modal) it snaps to the rest pose.
+- A page loaded in a background tab waits and greets when first shown.
+- After it: one slow blink every 5–7 s, a ~0.45 s rAF burst; nothing runs while
+  the launcher is hidden or the tab is in the background. No rAF loop may run
+  continuously.
+- `prefers-reduced-motion`: still face, no greeting, no blinks, no float.
+- Attributes are set imperatively from refs (no React render per frame);
+  `Mascot` is memoised on `active` so a parent render never resets them.
+- No `url(#id)` gradients in its SVG (fragile inside a Shadow Root): plain fills.
+- Hover/focus rules in `styles.css` override the animated opacity attributes
+  and declare their transition only in the hover state, so the script's per-frame
+  changes are never eased; they are off while `data-greeting` is set.
+
+`public/robot.png` (the old launcher image) is no longer used by this bundle;
+keep it until cached older bundles (up to 24 h) have aged out, then delete it.
+
 ### Mobile keyboard + scroll lock is interlocked — don't simplify
 
 Three pieces in `src/embed/ChatWidget.tsx` work together on `<lg` viewports and breaking any one of them re-opens UX bugs the user has already reported:

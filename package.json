@@ -14,7 +14,8 @@
     "verify:feature-toggles": "tsx scripts/verify-feature-toggles.ts",
     "verify:support": "tsx scripts/verify-support-socket.ts",
     "verify:support-client": "tsx scripts/verify-support-client.ts",
-    "verify:support-routes": "tsx scripts/verify-support-routes.ts"
+    "verify:support-routes": "tsx scripts/verify-support-routes.ts",
+    "verify:mascot": "tsx scripts/verify-mascot.ts"
   },
   "dependencies": {
     "@google/genai": "^1.0.0",
