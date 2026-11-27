@@ -12,7 +12,7 @@ const AMENITIES: [string, string][] = [
   ["pool-table", "Pool table"], ["first-aid", "First aid kit"], ["smoke-alarm", "Smoke alarm"], ["fire-extinguisher", "Fire extinguisher"],
 ];
 const TYPES: [string, string][] = [["", "Any type"], ["villa", "Villa"], ["apartment", "Apartment"], ["house", "House"], ["guesthouse", "Guesthouse / homestay"], ["hotel", "Hotel"], ["farmhouse", "Farmhouse"], ["tent", "Tent"]];
-const PLACE_TYPES: [string, string][] = [["", "Entire place or room"], ["entire", "Entire place"], ["room", "A room"]];
+const PLACE_TYPES: [string, string][] = [["", "Any"], ["entire", "Entire place"], ["room", "A room"]];
 const CANCELLATION: [string, string][] = [["", "Any cancellation"], ["flexible", "Flexible"], ["moderate", "Moderate"], ["strict", "Strict"]];
 
 interface Form {
@@ -153,9 +153,15 @@ export const FilterEditor: React.FC<{
   const select = (k: "propertyType" | "placeType" | "cancellation", text: string, options: [string, string][]) => (
     <label className="block">
       <span className={caption}>{text}</span>
-      <select value={form[k]} onChange={(e) => set(k, e.target.value)} className={field}>
-        {options.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
-      </select>
+      {/* The browser's own arrow sat on the border with no room for the text (Windows Chrome): ours has its own space. */}
+      <span className="relative block">
+        <select value={form[k]} onChange={(e) => set(k, e.target.value)} className={`${field} appearance-none pr-9 truncate cursor-pointer`}>
+          {options.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
+        </select>
+        <svg aria-hidden="true" viewBox="0 0 20 20" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500">
+          <path d="M5 7.5l5 5 5-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
     </label>
   );
 
