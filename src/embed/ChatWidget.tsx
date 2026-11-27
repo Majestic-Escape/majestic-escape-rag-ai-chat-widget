@@ -955,6 +955,7 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
         aria-label="Chatbot menu"
         inert={!isOpen}
         tabIndex={-1}
+        data-mc-scroll
         className={`
           absolute left-0 right-0 top-0 z-40 max-h-[88%] overflow-y-auto outline-none
           bg-white/98 backdrop-blur-md shadow-xl rounded-t-2xl duration-200 ease-out
