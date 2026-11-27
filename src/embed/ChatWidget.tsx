@@ -506,19 +506,17 @@ const MessageBubble: React.FC<{
   return (
     <div className={`flex flex-col w-full animate-fade-in-up ${isUser ? "items-end" : "items-start"}`}>
       <div className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}>
-        {!isUser && (
-          <div
-            className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 mr-2 mt-1 ${
-              message.isSupport ? "bg-blue-100 text-blue-600" : "bg-lightGreen text-primaryGreen"
-            }`}
-          >
-            {message.isSupport ? (
+        {!isUser &&
+          (message.isSupport ? (
+            <div className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 mr-2 mt-1 bg-blue-100 text-blue-600">
               <Headset className="w-3.5 h-3.5" />
-            ) : (
-              <Sparkles className="w-3.5 h-3.5" />
-            )}
-          </div>
-        )}
+            </div>
+          ) : (
+            // The assistant's mascot, still: a moving face beside every reply would distract.
+            <span className="block w-6 h-6 shrink-0 mr-2 mt-1 rounded-full [--mc-orb-size:1.5rem]">
+              <Mascot active={false} still />
+            </span>
+          ))}
         <div
           className={`
             max-w-[80%] px-4 py-2.5 text-[14px] shadow-sm
@@ -1850,15 +1848,16 @@ export const ChatWidget: React.FC = () => {
                   without this the title, sparkle icon and status all rendered
                   "Majestic AI · Ready to assist" for the few frames before the
                   config landed, even with the switch off. */}
-              <div className="w-8 h-8 rounded-full bg-primaryGreen text-white flex items-center justify-center">
-                {!configResolved ? (
-                  <MessageCircle className="w-4 h-4" />
-                ) : effectiveMode === "ai" ? (
-                  <Sparkles className="w-4 h-4" />
-                ) : (
-                  <Headset className="w-4 h-4" />
-                )}
-              </div>
+              {configResolved && effectiveMode === "ai" ? (
+                // The launcher's mascot: says hello (twinkle + nod) each time the panel opens.
+                <span className="block w-8 h-8 shrink-0 rounded-full shadow-[0_2px_6px_rgba(70,60,170,0.25)] [--mc-orb-size:2rem]">
+                  <Mascot active={isOpen} intro="hello" />
+                </span>
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-primaryGreen text-white flex items-center justify-center">
+                  {!configResolved ? <MessageCircle className="w-4 h-4" /> : <Headset className="w-4 h-4" />}
+                </div>
+              )}
               <div>
                 <h3 id="mc-chat-title" className="font-semibold text-graphite text-[15px] leading-tight">
                   {!configResolved

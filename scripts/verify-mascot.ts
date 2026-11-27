@@ -1,7 +1,7 @@
 // Pure checks for the launcher mascot's pose timeline and 3D projection
 // (src/embed/Mascot.tsx). No browser: run with `npm run verify:mascot`.
 import assert from "node:assert/strict";
-import { geometry, poseAt, REST, GREETING_SECONDS, type Geo } from "../src/embed/Mascot";
+import { geometry, poseAt, helloAt, REST, GREETING_SECONDS, HELLO_SECONDS, type Geo } from "../src/embed/Mascot";
 
 let passed = 0;
 const check = (name: string, fn: () => void) => {
@@ -56,6 +56,14 @@ check("the face turns 180° in: hidden at the start, in front by the end of the 
   const visibleAt = (t: number) => num(geometry(poseAt(t)).L.o) + num(geometry(poseAt(t)).R.o);
   assert.equal(visibleAt(0.1), 0);
   assert.ok(visibleAt(1.5) > 1.9);
+});
+
+check("header hello starts and ends facing the visitor, smiles in between", () => {
+  for (const t of [0, HELLO_SECONDS, HELLO_SECONDS + 5]) {
+    const p = helloAt(t);
+    for (const k of Object.keys(REST) as (keyof typeof REST)[]) assert.ok(Math.abs(p[k] - REST[k]) < 1e-9, `t=${t} ${k}=${p[k]}`);
+  }
+  assert.equal(helloAt(1).happy, 1);
 });
 
 console.log(`\n${passed} checks passed`);

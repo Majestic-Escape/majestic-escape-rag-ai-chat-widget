@@ -343,6 +343,13 @@ them like a real ball. The owner's rules, each asserted by
   and declare their transition only in the hover state, so the script's per-frame
   changes are never eased; they are off while `data-greeting` is set.
 
+The same component is in the panel: the **AI header** (`intro="hello"`: a
+twinkle and a nod each time the panel opens, then slow blinks; nothing while
+closed) and **every AI reply avatar** (`still`: never moves; they share one
+cached rest geometry). The **Support** tab keeps its headset icons in the
+header and on agent replies: the mascot is the AI assistant only.
+`--mc-orb-size` sets the orb's size outside the launcher.
+
 `public/robot.png` (the old launcher image) is no longer used by this bundle;
 keep it until cached older bundles (up to 24 h) have aged out, then delete it.
 

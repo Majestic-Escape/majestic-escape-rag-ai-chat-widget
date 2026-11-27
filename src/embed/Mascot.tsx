@@ -29,6 +29,19 @@ const KEYS: Record<keyof Pose, Key[]> = {
 export const GREETING_SECONDS = 6.7;
 // Slow idle blink: close 0.18 s, hold, open 0.22 s.
 const BLINK_KEYS: Key[] = [[0, 1], [0.18, 0.08], [0.23, 0.08], [0.45, 1]];
+// "Hello" (the panel header, on every open): a twinkle, then a nod with the peak eyes.
+const HELLO_KEYS: Partial<Record<keyof Pose, Key[]>> = {
+  tw: [[0, 0], [0.15, 1], [0.3, 0]],
+  pitch: [[0, 0], [0.3, 0], [0.57, -15], [0.85, 3], [1.1, 0]],
+  roll: [[0, 0], [0.3, 0], [0.57, -7], [1.55, -7], [1.95, 0]],
+  happy: [[0, 0], [0.3, 0], [0.5, 1], [1.55, 1], [1.8, 0]],
+};
+export const HELLO_SECONDS = 1.95;
+export function helloAt(t: number): Pose {
+  const p = { ...REST };
+  (Object.keys(HELLO_KEYS) as (keyof Pose)[]).forEach((k) => (p[k] = track(HELLO_KEYS[k]!, t)));
+  return p;
+}
 
 export type Pose = { yaw: number; pitch: number; roll: number; lead: number; blink: number; happy: number; tw: number };
 export const REST: Pose = { yaw: 0, pitch: 0, roll: 0, lead: 0, blink: 1, happy: 0, tw: 0 };
@@ -128,13 +141,28 @@ const PEAK = "M-8.5 4.5L0-4.5L8.5 4.5";
 const LOGO =
   "M96.6 97.4L82.7 112.3L113.9 144H101C94.3 144 87.9 141.4 83.1 136.6L58.3 112.3L84.7 85.9L70.2 71.3L42.2 99.4C37.4 104.2 30.9 106.9 24.1 106.9H11.4L70.2 48L96.6 73.9L122.8 48L180.6 106.9H168.3C161.4 106.9 154.8 104.1 150 99.2L122.8 71.3L108 85.9L146.9 125.1H134.5C127.6 125.1 121.1 122.3 116.2 117.4L96.6 97.4Z";
 
+// One shared rest geometry: every message avatar shows it, so a long chat computes it once.
+let restGeo: Geo | null = null;
+const restGeometry = () => (restGeo ??= geometry(REST));
+
 type EyeRefs = { g: SVGGElement | null; star: SVGPathElement | null; glow: SVGPathElement | null; peak: SVGPathElement | null };
 
-/** `active`: the launcher is on screen (not hidden behind the panel or a host modal). */
-export const Mascot = memo(function Mascot({ active }: { active: boolean }) {
+type MascotProps = {
+  /** On screen (the launcher not hidden behind the panel or a host modal; the panel open). */
+  active: boolean;
+  /**
+   * "greet" (launcher): the 180° greeting once per page load, then slow blinks.
+   * "hello" (panel header): a twinkle and a nod each time it becomes active, then slow blinks.
+   */
+  intro?: "greet" | "hello";
+  /** A still face: no motion at all. */
+  still?: boolean;
+};
+
+export const Mascot = memo(function Mascot({ active, intro = "greet", still = false }: MascotProps) {
   // Not greeted yet: start showing the back of the head, the greeting's first frame.
-  const [willGreet] = useState(() => !greetedThisLoad && !prefersReducedMotion());
-  const [initial] = useState(() => geometry(willGreet ? poseAt(0) : REST));
+  const [willGreet] = useState(() => intro === "greet" && !still && !greetedThisLoad && !prefersReducedMotion());
+  const [initial] = useState(() => (willGreet ? geometry(poseAt(0)) : restGeometry()));
   const orbRef = useRef<HTMLSpanElement>(null);
   const rollRef = useRef<SVGGElement>(null);
   const markRef = useRef<SVGGElement>(null);
@@ -147,7 +175,7 @@ export const Mascot = memo(function Mascot({ active }: { active: boolean }) {
   });
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || still) return;
     const set = (el: Element | null, name: string, value: string) => el?.setAttribute(name, value);
     const apply = (g: Geo) => {
       set(rollRef.current, "transform", g.roll);
@@ -203,6 +231,7 @@ export const Mascot = memo(function Mascot({ active }: { active: boolean }) {
       }, 5000 + Math.random() * 2000);
     };
     const start = () => {
+      if (intro === "hello") return play(HELLO_SECONDS, helloAt, scheduleBlink);
       if (greetedThisLoad) return scheduleBlink();
       greetedThisLoad = true;
       play(GREETING_SECONDS, poseAt, () => { greetingOver(); scheduleBlink(); });
@@ -222,9 +251,9 @@ export const Mascot = memo(function Mascot({ active }: { active: boolean }) {
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
       // Hidden mid-greeting (opened at once, or a host sheet): come back facing the visitor.
-      if (greetedThisLoad) { apply(geometry(REST)); greetingOver(); }
+      if (greetedThisLoad || intro === "hello") { apply(geometry(REST)); greetingOver(); }
     };
-  }, [active]);
+  }, [active, intro, still]);
 
   const eye = (side: "L" | "R") => {
     const e = initial[side], r = eyes.current[side];
