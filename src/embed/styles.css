@@ -18,7 +18,7 @@
 }
 
 /* Launcher footprint. One set of variables drives the launcher's position, its
- * box, the robot inside it and the new-conversation dot (ChatWidget.tsx reads
+ * box, the mascot inside it (Mascot.tsx) and the new-conversation dot (ChatWidget.tsx reads
  * them as w-[var(--mc-launcher-size)] etc.), so the four can never drift apart.
  * Plain media queries, in this order, instead of Tailwind variants: the later
  * rule wins, which is the only ordering these overlapping queries need.
@@ -38,7 +38,6 @@
  * so they stay above the price bar. */
 :host {
   --mc-launcher-size: 48px;
-  --mc-launcher-mark: 2rem;
   --mc-launcher-dot: 0.75rem;
   --mc-launcher-right: 0.75rem;
   --mc-launcher-bottom: calc(env(safe-area-inset-bottom, 0px) + 7rem);
@@ -46,7 +45,6 @@
 @media (min-width: 768px) {
   :host {
     --mc-launcher-size: 4rem;
-    --mc-launcher-mark: 2.75rem;
     --mc-launcher-dot: 0.875rem;
     --mc-launcher-right: 1.5rem;
     --mc-launcher-bottom: 1.5rem;
@@ -55,7 +53,6 @@
 @media (max-height: 500px) and (pointer: coarse) {
   :host {
     --mc-launcher-size: 44px;
-    --mc-launcher-mark: 1.75rem;
     --mc-launcher-right: 0.75rem;
   }
 }
@@ -65,16 +62,92 @@
   }
 }
 
-/* Launcher animations — scoped inside the Shadow DOM. The robot mascot uses:
+/* Launcher animations — scoped inside the Shadow DOM. The mascot (Mascot.tsx)
+ * uses:
  *  - mc-float: a slow ±3px vertical bob, like a hovercraft idle
- *  - mc-halo: a pulsing primaryGreen ring that fades outward (calls attention
- *    without being a hard "notification" cue)
- *  - mc-wiggle: tiny rotational wave on hover, plays once
- * All three respect prefers-reduced-motion via the media query at the bottom. */
+ *  - mc-halo: a pulsing ring that fades outward (calls attention without
+ *    being a hard "notification" cue)
+ * Both respect prefers-reduced-motion via the media query at the bottom. */
+.mc-float {
+  animation: mc-float 3.6s ease-in-out infinite;
+}
 @keyframes mc-float {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-3px); }
 }
+
+/* The mascot orb. 1em = the launcher size, so every detail scales with it.
+ * Its visor and eyes are SVG drawn by Mascot.tsx; colours are plain fills
+ * (no url(#id) gradients, which resolve unreliably inside a Shadow Root). */
+.mc-orb {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  font-size: var(--mc-launcher-size);
+  border-radius: 50%;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 78% 18%, rgba(255, 170, 240, 0.95) 0, rgba(255, 170, 240, 0) 42%),
+    radial-gradient(circle at 18% 92%, rgba(80, 150, 255, 0.95) 0, rgba(80, 150, 255, 0) 55%),
+    linear-gradient(165deg, #f39ae8 0, #c995f4 38%, #8fa9f6 70%, #5b93f2 100%);
+  box-shadow: inset -0.05em -0.07em 0.12em rgba(46, 36, 140, 0.35),
+    inset 0.045em 0.02em 0.07em rgba(200, 235, 255, 0.75);
+}
+.mc-orb svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.mc-orb-shine {
+  position: absolute;
+  left: 0.07em;
+  top: 0.07em;
+  width: 0.86em;
+  height: 0.86em;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 0.03em solid transparent;
+  border-top-color: rgba(255, 255, 255, 0.75);
+  transform: rotate(-42deg);
+  -webkit-mask: linear-gradient(90deg, transparent 0, #000 30%, #000 52%, transparent 80%);
+  mask: linear-gradient(90deg, transparent 0, #000 30%, #000 52%, transparent 80%);
+  pointer-events: none;
+}
+.mc-orb-dot {
+  position: absolute;
+  left: 0.2em;
+  top: 0.16em;
+  width: 0.07em;
+  height: 0.05em;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.8);
+  transform: rotate(-40deg);
+  pointer-events: none;
+}
+/* Hover (real pointers only, so a tap doesn't leave it stuck) and keyboard
+ * focus: the head tilts and the eyes turn into the logo's two peaks. CSS
+ * opacity outranks the opacity attributes the script animates, and the
+ * transitions are declared only in these states, so the script's per-frame
+ * attribute changes are never eased. .mc-tilt is never touched by the script. */
+.mc-tilt {
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+  transition: transform 0.35s cubic-bezier(0.3, 1.4, 0.6, 1);
+}
+@media (hover: hover) {
+  .group:hover .mc-orb:not([data-greeting]) .mc-tilt { transform: rotate(-7deg); }
+  .group:hover .mc-orb:not([data-greeting]) .mc-star,
+  .group:hover .mc-orb:not([data-greeting]) .mc-glow { opacity: 0; transition: opacity 0.2s ease-out; }
+  .group:hover .mc-orb:not([data-greeting]) .mc-peak { opacity: 1; transition: opacity 0.2s ease-out; }
+}
+.group:focus-visible .mc-orb:not([data-greeting]) .mc-tilt { transform: rotate(-7deg); }
+.group:focus-visible .mc-orb:not([data-greeting]) .mc-star,
+.group:focus-visible .mc-orb:not([data-greeting]) .mc-glow { opacity: 0; transition: opacity 0.2s ease-out; }
+.group:focus-visible .mc-orb:not([data-greeting]) .mc-peak { opacity: 1; transition: opacity 0.2s ease-out; }
 @keyframes mc-halo {
   /* The visible pulse occupies the first 15% of the cycle (~1.5s out of 10s),
    * then stays invisible until the next iteration — gives the launcher a
@@ -82,13 +155,6 @@
   0% { transform: scale(0.85); opacity: 0.55; }
   15% { transform: scale(1.6); opacity: 0; }
   100% { transform: scale(1.6); opacity: 0; }
-}
-@keyframes mc-wiggle {
-  0% { transform: rotate(0deg); }
-  25% { transform: rotate(-6deg); }
-  50% { transform: rotate(5deg); }
-  75% { transform: rotate(-3deg); }
-  100% { transform: rotate(0deg); }
 }
 @keyframes mc-pop-in {
   0% { transform: scale(0); opacity: 0; }
@@ -109,7 +175,12 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mc-float, .mc-halo, .mc-wiggle, .mc-pop-in {
+  .mc-float, .mc-halo, .mc-pop-in {
     animation: none !important;
+  }
+  /* Hover/focus still swap in the happy eyes (an instant change), without the tilt. */
+  .mc-tilt {
+    transform: none !important;
+    transition: none;
   }
 }

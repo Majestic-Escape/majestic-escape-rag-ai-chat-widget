@@ -28,6 +28,7 @@ import {
 import { useChat } from "./useChat";
 import { useSupportChat, RetryResult } from "./useSupportChat";
 import { ComposerField } from "./ComposerField";
+import { Mascot } from "./Mascot";
 import { Message, ChatMode, PropertyCardData } from "./types";
 
 const aiQuickPrompts = [
@@ -2196,10 +2197,12 @@ export const ChatWidget: React.FC = () => {
         </div>
       </div>
 
-      {/* Launcher Button — robot mascot with floating idle bob, soft halo
-          pulse for ambient attention, and a one-shot wiggle on hover. The
-          launcher is wrapped in a sized container so the absolutely-
-          positioned halo doesn't shift the bottom-right offset of the panel.
+      {/* Launcher Button — the 3D mascot (Mascot.tsx): it greets once per page
+          load (spins in 180°, looks around, nods), then only blinks; a floating
+          idle bob and a soft halo pulse give ambient attention; hover and
+          keyboard focus make it tilt and smile. The launcher is wrapped in a
+          sized container so the absolutely-positioned halo doesn't shift the
+          bottom-right offset of the panel.
           When the chat is open the launcher fades + scales out (instead of
           rotating, which looked off with the mascot's face). It fades where
           it stands, and is `invisible` once faded, so it is no hidden Tab
@@ -2220,12 +2223,13 @@ export const ChatWidget: React.FC = () => {
           }
         `}
       >
-        {/* Soft pulsing halo — primaryGreen ring fading outward. Pure visual
-            cue; aria-hidden so screen readers don't announce it. */}
+        {/* Soft pulsing halo — a violet ring (the mascot's colour) fading
+            outward. Pure visual cue; aria-hidden so screen readers don't
+            announce it. */}
         {launcherShown && (
           <span
             aria-hidden="true"
-            className="absolute inset-0 rounded-full bg-primaryGreen/40 mc-halo pointer-events-none"
+            className="absolute inset-0 rounded-full bg-[rgba(150,130,240,0.38)] mc-halo pointer-events-none"
             style={{ animation: "mc-halo 10s ease-out infinite" }}
           />
         )}
@@ -2234,14 +2238,10 @@ export const ChatWidget: React.FC = () => {
           type="button"
           onClick={() => setIsOpen(!isOpen)}
           className={`
-            group relative ${LAUNCHER_SIZE} rounded-full shadow-floating
-            flex items-center justify-center
-            bg-gradient-to-br from-white via-white to-lightGreen/40
-            ring-2 ring-primaryGreen/20 hover:ring-primaryGreen/50
-            transition-[transform,box-shadow] duration-300 ease-out
-            hover:scale-110 hover:shadow-[0_12px_36px_rgba(54,98,31,0.35)]
-            active:scale-95
-            focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-primaryGreen/40
+            group relative ${LAUNCHER_SIZE} rounded-full
+            transition-transform duration-300 ease-out
+            hover:scale-110 active:scale-95
+            focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#4338CA]/60 focus-visible:ring-offset-2
           `}
           aria-label={
             // Mode-aware: with the assistant switched off there is no AI chat
@@ -2250,31 +2250,11 @@ export const ChatWidget: React.FC = () => {
             aiAvailable ? "Open Majestic AI chat" : "Open Majestic Support chat"
           }
         >
-          {/* Robot mascot — served from the widget origin so it survives
-              build:embed (which only wipes public/embed). Idle float lives on
-              the image so the halo and ring stay still. Hover wiggles the
-              robot once for a friendly greeting. */}
-          <img
-            src={`${getBackendUrl()}/robot.png`}
-            alt=""
-            draggable={false}
-            className="
-              w-[var(--mc-launcher-mark)] h-[var(--mc-launcher-mark)] select-none pointer-events-none
-              drop-shadow-[0_2px_4px_rgba(0,0,0,0.12)]
-            "
-            style={{ animation: "mc-float 3.6s ease-in-out infinite" }}
-            onMouseEnter={(e) => {
-              const el = e.currentTarget;
-              el.style.animation = "mc-wiggle 0.6s ease-in-out, mc-float 3.6s ease-in-out infinite 0.6s";
-              el.addEventListener(
-                "animationend",
-                () => {
-                  el.style.animation = "mc-float 3.6s ease-in-out infinite";
-                },
-                { once: true }
-              );
-            }}
-          />
+          {/* The idle float and the shadow live on this wrapper so they bob
+              together, while the button (hover scale) and halo stay still. */}
+          <span className="mc-float block w-full h-full rounded-full shadow-floating transition-shadow duration-300 group-hover:shadow-[0_12px_36px_rgba(91,70,200,0.35)] pointer-events-none select-none">
+            <Mascot active={launcherShown} />
+          </span>
           {/* New-conversation indicator — small green-tinted dot with a
               gentle bounce so it reads as "hey, fresh chat" without the
               alarm-bell red of the previous version. */}
