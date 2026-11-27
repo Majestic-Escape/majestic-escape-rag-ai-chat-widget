@@ -84,7 +84,8 @@
   display: block;
   width: 100%;
   height: 100%;
-  font-size: var(--mc-launcher-size);
+  /* --mc-orb-size: set by a placement other than the launcher (the panel header). */
+  font-size: var(--mc-orb-size, var(--mc-launcher-size));
   border-radius: 50%;
   overflow: hidden;
   isolation: isolate;
