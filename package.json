@@ -15,9 +15,14 @@
     "verify:support": "tsx scripts/verify-support-socket.ts",
     "verify:support-client": "tsx scripts/verify-support-client.ts",
     "verify:support-routes": "tsx scripts/verify-support-routes.ts",
-    "verify:mascot": "tsx scripts/verify-mascot.ts"
+    "verify:mascot": "tsx scripts/verify-mascot.ts",
+    "verify:rag": "tsx scripts/verify-rag.ts",
+    "verify:rag-backend": "tsx scripts/verify-rag-backend.ts",
+    "bench:ranking": "tsx scripts/bench-ranking.ts",
+    "eval:rag": "tsx scripts/eval-rag.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.14.0",
     "@google/genai": "^1.0.0",
     "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.456.0",

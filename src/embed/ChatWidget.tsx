@@ -24,12 +24,14 @@ import {
   Heart,
   RotateCcw,
   MessageSquare,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useChat } from "./useChat";
 import { useSupportChat, RetryResult } from "./useSupportChat";
 import { ComposerField } from "./ComposerField";
 import { Mascot } from "./Mascot";
-import { Message, ChatMode, PropertyCardData } from "./types";
+import { Message, ChatMode, PropertyCardData, FilterChip, FilterOp, SearchFilters } from "./types";
+import { DraftCard, FilterEditor } from "./FilterEditor";
 
 const aiQuickPrompts = [
   { icon: <Search className="w-3.5 h-3.5" />, text: "Find a villa in Goa with a pool" },
@@ -58,6 +60,16 @@ const supportQuickPrompts = [
 // scrollByCard() still reads the rendered width at runtime so any future
 // resize tweak just works.
 const CARD_GAP = 12;
+
+// What a card may say about itself. Availability is only ever "available when
+// checked" (this reply) or "recheck" (a reply restored from history) — never a
+// promise; the booking flow is what confirms a stay.
+function cardBadge(p: PropertyCardData): string | null {
+  if (p.note) return p.note.charAt(0).toUpperCase() + p.note.slice(1);
+  if (p.availability === "available") return "Available for your dates";
+  if (p.availability === "recheck") return "Recheck availability";
+  return null;
+}
 
 const PropertyCardPortrait: React.FC<{
   property: PropertyCardData;
@@ -101,9 +113,16 @@ const PropertyCardPortrait: React.FC<{
             <BedDouble className="w-10 h-10 text-primaryGreen/50" />
           </div>
         )}
-        {property.partiallyBooked && (
-          <span className="absolute top-2.5 left-2.5 bg-white/95 backdrop-blur text-[11px] font-medium text-red-600 px-2.5 py-0.5 rounded-full border border-red-200 shadow-sm">
-            Booked for your dates
+        {cardBadge(property) && (
+          <span
+            title={cardBadge(property) ?? undefined}
+            className={`absolute top-2.5 left-2.5 max-w-[70%] truncate bg-white/95 backdrop-blur text-[11px] font-medium px-2.5 py-0.5 rounded-full border shadow-sm ${
+              !property.note && property.availability === "available"
+                ? "text-primaryGreen border-primaryGreen/30"
+                : "text-gray-700 border-gray-200"
+            }`}
+          >
+            {cardBadge(property)}
           </span>
         )}
         {property.averageRating > 0 && (
@@ -128,13 +147,13 @@ const PropertyCardPortrait: React.FC<{
         <div className="flex items-center justify-between gap-1">
           <span className="text-[15px] font-semibold text-primaryGreen whitespace-nowrap">
             ₹{property.basePrice?.toLocaleString("en-IN")}
-            <span className="text-[11px] text-gray-500 font-normal">/night</span>
+            <span className="text-[11px] text-gray-500 font-normal">/night · excl. taxes</span>
           </span>
           <div className="flex items-center gap-1 text-[12px] text-gray-500 shrink-0">
-            <Users className="w-3.5 h-3.5" />
-            {property.guests}
-            <BedDouble className="w-3.5 h-3.5 ml-1" />
-            {property.bedrooms}
+            <Users className="w-3.5 h-3.5" aria-hidden="true" />
+            <span className="sr-only">Sleeps</span> {property.guests}<span className="sr-only">, </span>
+            <BedDouble className="w-3.5 h-3.5 ml-1" aria-hidden="true" />
+            {property.bedrooms}<span className="sr-only"> bedrooms</span>
           </div>
         </div>
       </div>
@@ -151,14 +170,14 @@ const SeeAllTile: React.FC<{ query: string; index: number; total: number }> = ({
     href={`/stays${query ? `?q=${encodeURIComponent(query)}` : ""}`}
     role="group"
     aria-roledescription="slide"
-    aria-label={`${index + 1} of ${total}: See all matching stays`}
+    aria-label={`${index + 1} of ${total}: Browse all stays`}
     className="snap-center shrink-0 w-72 h-80 rounded-2xl border-2 border-dashed border-primaryGreen/40 bg-lightGreen/20 hover:bg-lightGreen/40 hover:border-primaryGreen flex flex-col items-center justify-center gap-2 text-primaryGreen no-underline transition-all hover:-translate-y-0.5"
   >
     <div className="w-12 h-12 rounded-full bg-primaryGreen/10 flex items-center justify-center group-hover:bg-primaryGreen/20">
       <ArrowRight className="w-6 h-6" />
     </div>
     <span className="text-[15px] font-semibold text-center px-3 leading-tight">
-      See all matching stays
+      Browse all stays
     </span>
   </a>
 );
@@ -470,13 +489,94 @@ const DeliveryStatus: React.FC<{
   );
 };
 
+// What kind of result a reply's cards are. A live reply says so itself; a reply
+// restored from history is read from its cards (one reply never mixes kinds).
+const GROUP_HEADINGS: Record<string, string> = {
+  match: "Matches",
+  possible: "Not verified", // each card's badge says what ("Not verified: private pool")
+  alternative: "Nearby alternatives",
+};
+function groupHeading(message: Message): string | null {
+  if (message.heading) return message.heading;
+  const group = message.properties?.[0]?.group;
+  return group ? GROUP_HEADINGS[group] ?? null : null;
+}
+
+// The requirements of the current search, each removable, plus "Clear". Shown
+// only on the newest reply: older ones describe a search that has moved on.
+// Real buttons with their own labels, so they work by keyboard and screen reader.
+const FilterChips: React.FC<{
+  chips: FilterChip[];
+  disabled: boolean;
+  onRemove: (chip: FilterChip) => void;
+  onClear: () => void;
+  /** Filters mode: opens the filter editor (add or change a filter without the assistant). */
+  onEdit?: (opener: HTMLElement) => void;
+}> = ({ chips, disabled, onRemove, onClear, onEdit }) => (
+  <div role="group" aria-label="Your search" className="flex flex-wrap gap-1.5 mb-2">
+    {onEdit && (
+      <button
+        type="button"
+        aria-disabled={disabled}
+        onClick={(e) => !disabled && onEdit(e.currentTarget)}
+        className="inline-flex items-center gap-1 rounded-full bg-primaryGreen text-white text-[12px] font-semibold px-3 py-1 hover:bg-brightGreen focus-visible:outline focus-visible:outline-2 focus-visible:outline-primaryGreen"
+      >
+        <SlidersHorizontal className="w-3 h-3" aria-hidden="true" />
+        {chips.length ? "Edit filters" : "Set filters"}
+      </button>
+    )}
+    {chips.map((chip) => (
+      <button
+        key={chip.label}
+        type="button"
+        aria-disabled={disabled}
+        aria-label={`Remove ${chip.label}`}
+        onClick={() => !disabled && onRemove(chip)}
+        className="inline-flex items-center gap-1 max-w-full rounded-full border border-primaryGreen/30 bg-lightGreen/30 text-primaryGreen text-[12px] font-medium pl-2.5 pr-1.5 py-1 hover:bg-lightGreen/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primaryGreen"
+      >
+        <span className="truncate">{chip.label}</span>
+        <X className="w-3 h-3 shrink-0" aria-hidden="true" />
+      </button>
+    ))}
+    {chips.length > 0 && (
+      <button
+        type="button"
+        aria-disabled={disabled}
+        onClick={() => !disabled && onClear()}
+        className="inline-flex items-center rounded-full border border-gray-200 text-gray-600 text-[12px] font-medium px-2.5 py-1 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primaryGreen"
+      >
+        Clear
+      </button>
+    )}
+  </div>
+);
+
 const MessageBubble: React.FC<{
   message: Message;
   onRetry?: (id: string, confirmed?: boolean) => RetryResult;
   onRemove?: (id: string) => void;
-}> = ({ message, onRetry, onRemove }) => {
+  /** Set only on the newest reply of the AI conversation. */
+  chips?: { disabled: boolean; onRemove: (chip: FilterChip) => void; onClear: () => void; onEdit?: (opener: HTMLElement) => void };
+  /** Filters mode: the draft's actions (live only on the newest reply) and the quick answers. */
+  draftActions?: { live: boolean; disabled: boolean; onApply: (op: FilterOp, summary: string) => void; onEdit: (opener: HTMLElement) => void; onDiscard: () => void };
+  onQuick?: (answer: string) => void;
+}> = ({ message, onRetry, onRemove, chips, draftActions, onQuick }) => {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
+
+  // Links are made clickable only for our own site (the policy pages the
+  // assistant points to); any other URL stays plain text.
+  const SITE_LINK = /(https:\/\/majesticescape\.in\/[A-Za-z0-9\-/]*)/;
+  const withLinks = (text: string, key: number) =>
+    text.split(SITE_LINK).map((seg, k) =>
+      SITE_LINK.test(seg) ? (
+        <a key={`${key}-${k}`} href={seg} className="underline underline-offset-2 font-medium">
+          {seg.replace("https://", "")}
+        </a>
+      ) : (
+        seg
+      )
+    );
 
   const formatText = (text: string) =>
     text.split("\n").map((line, i, arr) => (
@@ -485,7 +585,7 @@ const MessageBubble: React.FC<{
           part.startsWith("**") && part.endsWith("**") ? (
             <strong key={j}>{part.slice(2, -2)}</strong>
           ) : (
-            part
+            withLinks(part, j)
           )
         )}
         {i !== arr.length - 1 && <br />}
@@ -527,9 +627,34 @@ const MessageBubble: React.FC<{
             }
           `}
         >
-          <div className="leading-relaxed whitespace-pre-wrap break-words">
-            {formatText(message.text)}
-          </div>
+          {/* Filters mode: the newest reply always has the controls, even one without chips (restored history,
+              a failed turn), so the guest is never left with only the message box. */}
+          {chips && ((message.filters?.length ?? 0) > 0 || (chips.onEdit && message.id !== "init-ai")) && (
+            <FilterChips chips={message.filters ?? []} disabled={chips.disabled} onRemove={chips.onRemove} onClear={chips.onClear} onEdit={chips.onEdit} />
+          )}
+          {message.draft && draftActions ? (
+            <DraftCard
+              draft={message.draft}
+              live={draftActions.live}
+              disabled={draftActions.disabled}
+              onApply={draftActions.onApply}
+              onEdit={draftActions.onEdit}
+              onDiscard={draftActions.onDiscard}
+            />
+          ) : (
+            <div className="leading-relaxed whitespace-pre-wrap break-words">
+              {formatText(message.text)}
+            </div>
+          )}
+          {onQuick && message.quick && message.quick.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {message.quick.map((q) => (
+                <button key={q} type="button" onClick={() => onQuick(q)} className="rounded-full border border-primaryGreen/40 text-primaryGreen text-[12px] font-medium px-3 py-1.5 hover:bg-lightGreen/40">
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
           <div
             className={`text-[10px] mt-1.5 font-medium ${
               isUser ? "text-white/70 text-right" : "text-gray-400 text-left"
@@ -550,6 +675,9 @@ const MessageBubble: React.FC<{
       {/* Suggested stays — horizontal snap carousel of portrait cards. */}
       {!isUser && message.properties && message.properties.length > 0 && (
         <div className="ml-8 w-[calc(100%-2rem)]">
+          {groupHeading(message) && (
+            <p className="mt-2 mb-0.5 px-1 text-[12px] font-semibold uppercase tracking-wide text-gray-500">{groupHeading(message)}</p>
+          )}
           <PropertyCarousel properties={message.properties} />
         </div>
       )}
@@ -1089,6 +1217,13 @@ export const ChatWidget: React.FC = () => {
   // (unknown / unreachable config → on): hiding Support on a failed lookup
   // would be the outage, and the server refuses a switched-off customer anyway.
   const [supportEnabled, setSupportEnabled] = useState(true);
+  // Filters pilot (same config): the guest sets the search with buttons; a typed message is a draft to confirm
+  // only when `aiDraft` is on. Advisory, like the rest of the config: the server decides what a message does.
+  const [searchControls, setSearchControls] = useState(false);
+  const [aiDraft, setAiDraft] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const editorReturnRef = useRef<HTMLElement | null>(null);
+  const [dismissedDrafts, setDismissedDrafts] = useState<ReadonlySet<string>>(() => new Set());
   const {
     aiMessages,
     isLoading: aiLoading,
@@ -1099,6 +1234,7 @@ export const ChatWidget: React.FC = () => {
     resetAiMessages,
     aiHistoryReady,
     forgetAi,
+    aiStatus,
   } = useChat();
   // What a refused Support message may go back into: the message box, when
   // the Support tab is showing and the box is empty — never over something
@@ -1167,7 +1303,54 @@ export const ChatWidget: React.FC = () => {
   // Show only the active tab's history; AI from local hook, Support from Socket.IO hook.
   const messages = effectiveMode === "ai" ? aiMessages : support.messages;
   const isLoading = effectiveMode === "ai" ? aiLoading : support.isLoading;
+  // Filter chips are live only on the newest AI reply: older ones describe a search that has moved on.
+  const newestAiReplyId = [...aiMessages].reverse().find((m) => m.role === "model" && m.text?.trim())?.id;
+  // The filter editor starts from the search as the server last described it.
+  const currentSearch: SearchFilters = [...aiMessages].reverse().find((m) => m.role === "model" && m.search)?.search ?? {};
+  const otherFilters = [
+    ...(currentSearch.unsupported ?? []),
+    ...(currentSearch.amenitiesAny?.length ? [currentSearch.amenitiesAny.join(" or ")] : []),
+    ...(currentSearch.amenitiesNone ?? []).map((x) => `no ${x}`),
+    ...(currentSearch.soft ?? []).map((x) => `${x} (nice to have)`),
+  ];
+  const openEditor = (opener: HTMLElement | null) => {
+    editorReturnRef.current = opener;
+    setEditorOpen(true);
+  };
+  // A button, an edit or a confirmed draft: sent as an op the server applies without a model. Focus goes to the
+  // panel, not the message box, so a phone's keyboard does not pop up.
+  const applyOp = (op: FilterOp, summary: string) => {
+    setEditorOpen(false);
+    panelRef.current?.focus({ preventScroll: true });
+    sendAi(summary, "ai", op);
+  };
+  // Screen readers hear only this, not the whole log: the status while waiting, then the newest
+  // incoming message once complete. Announcing the log itself read every card, chip and timestamp.
+  const newestIncoming = [...messages].reverse().find((m) => m.role === "model" && m.text?.trim());
+  const announcedIdRef = useRef<string | undefined>(newestIncoming?.id);
+  const [announcement, setAnnouncement] = useState("");
+  const statusAnnouncedRef = useRef(false);
+  // History arrives after the panel opens; only messages newer than the opening are read out.
+  const openedAtRef = useRef(0);
+  useEffect(() => { if (isOpen) openedAtRef.current = Date.now(); }, [isOpen]);
   const error = effectiveMode === "ai" ? aiError : support.error;
+  useEffect(() => {
+    if (isLoading) {
+      if (effectiveMode === "ai") { setAnnouncement(aiStatus ?? "Reading your message…"); statusAnnouncedRef.current = true; }
+      return;
+    }
+    if (newestIncoming && newestIncoming.id !== announcedIdRef.current) {
+      announcedIdRef.current = newestIncoming.id;
+      // 5 s of slack for a server clock a little behind this device's
+      if (new Date(newestIncoming.timestamp).getTime() < openedAtRef.current - 5000) return;
+      statusAnnouncedRef.current = false;
+      const n = newestIncoming.properties?.length ?? 0;
+      setAnnouncement(`${newestIncoming.text.trim()}${n ? ` ${n === 1 ? "1 stay is" : `${n} stays are`} shown below.` : ""}`);
+      return;
+    }
+    // The wait ended with no reply (an error, or AI switched off): never leave "Searching stays…" behind.
+    if (statusAnnouncedRef.current) { statusAnnouncedRef.current = false; setAnnouncement(error ?? ""); }
+  }, [isLoading, aiStatus, effectiveMode, newestIncoming, error]);
   const hasUserMessage = messages.some((m) => m.role === "user");
   composerForRestoreRef.current = { empty: !inputValue.trim(), support: effectiveMode === "support" };
 
@@ -1285,6 +1468,8 @@ export const ChatWidget: React.FC = () => {
         const data = await res.json();
         if (!cancelled) {
           setSupportEnabled(data?.supportEnabled !== false);
+          setSearchControls(data?.searchControls === true);
+          setAiDraft(data?.aiDraft === true);
           setAiEnabled(data?.aiEnabled === true);
         }
       } catch {
@@ -1717,7 +1902,7 @@ export const ChatWidget: React.FC = () => {
       }
       return;
     }
-    if (e.key !== "Escape" || e.nativeEvent.isComposing || menuOpen) return;
+    if (e.key !== "Escape" || e.nativeEvent.isComposing || menuOpen || editorOpen) return;
     e.stopPropagation();
     closedByKeyboardRef.current = true;
     setIsOpen(false);
@@ -1802,6 +1987,19 @@ export const ChatWidget: React.FC = () => {
           aria-hidden="true"
           className="absolute w-0 h-0 overflow-hidden invisible pointer-events-none pb-[env(safe-area-inset-bottom)]"
         />
+
+        {/* Filters pilot: the search as a form. Every change is an op the server applies without a model. */}
+        {searchControls && aiAvailable && (
+          <FilterEditor
+            isOpen={editorOpen && isOpen}
+            initial={currentSearch}
+            others={otherFilters}
+            returnFocusRef={editorReturnRef}
+            onApply={applyOp}
+            onReset={() => applyOp({ reset: true }, "Clear all filters")}
+            onClose={() => setEditorOpen(false)}
+          />
+        )}
 
         {/* Main menu drawer — overlays the messages when open. Sits above the
             header z-stack so it visually covers everything. */}
@@ -1963,13 +2161,14 @@ export const ChatWidget: React.FC = () => {
           {!showModeTabs && <div className="mb-3 group-data-[typing]/panel:hidden" />}
         </div>
 
+        <div className="sr-only" role="status" aria-live="polite">{announcement}</div>
         {/* Messages — `overscroll-contain` stops the scroll chain from
             propagating to the body when the user reaches the top/bottom of
             the list, so the host page never scrolls in the background.
             Tagged with a ref so the global touchmove blocker on mobile can
             allow finger-drag scrolling INSIDE this region while preventing it
             anywhere else (header, footer, backdrop, host page beneath). */}
-        <div ref={messagesScrollRef} onScroll={onMessagesScroll} className="flex-1 overflow-y-auto overscroll-contain p-4 bg-gray-50/50 flex flex-col gap-4 [scrollbar-width:thin] [scrollbar-color:#CBD5E1_transparent]">
+        <div ref={messagesScrollRef} onScroll={onMessagesScroll} role="log" aria-label="Conversation" aria-live="off" className="flex-1 overflow-y-auto overscroll-contain p-4 bg-gray-50/50 flex flex-col gap-4 [scrollbar-width:thin] [scrollbar-color:#CBD5E1_transparent]">
           {/* Nothing about either mode until the kill-switch answer lands.
               `mode` defaults to "ai", so without this gate the AI greeting and
               the "Try asking about:" prompts painted before we knew whether the
@@ -1983,7 +2182,22 @@ export const ChatWidget: React.FC = () => {
           {/* The starter prompts wait until the saved conversation has been
               looked up: a returning visitor's history would replace them a
               moment later, and the swap flickered on open. */}
-          {configResolved && !hasUserMessage && effectiveMode === "ai" && aiAvailable && aiHistoryReady && (
+          {configResolved && !hasUserMessage && effectiveMode === "ai" && aiAvailable && aiHistoryReady && searchControls && (
+            <div className="flex flex-col gap-2 mb-2 animate-fade-in-up">
+              <button
+                type="button"
+                onClick={(e) => openEditor(e.currentTarget)}
+                className="flex items-center justify-center gap-2 bg-primaryGreen hover:bg-brightGreen text-white text-sm font-semibold px-4 py-3 rounded-xl transition-colors shadow-sm"
+              >
+                <SlidersHorizontal className="w-4 h-4" aria-hidden="true" />
+                Set your search: place, guests, budget, amenities
+              </button>
+              <p className="text-xs text-gray-500 ml-1">
+                {aiDraft ? "Or describe your stay below; I'll show what I understood before changing anything." : "Prices are per night before taxes; pick your dates on the stay page."}
+              </p>
+            </div>
+          )}
+          {configResolved && !hasUserMessage && effectiveMode === "ai" && aiAvailable && aiHistoryReady && (!searchControls || aiDraft) && (
             <div className="flex flex-col gap-2 mb-2 animate-fade-in-up">
               <p className="text-xs font-medium text-gray-500 ml-1">Try asking about:</p>
               <div className="flex flex-col gap-2">
@@ -2076,18 +2290,51 @@ export const ChatWidget: React.FC = () => {
                   }}
                 />
               ) : (
-                <MessageBubble key={msg.id} message={msg} />
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  chips={
+                    msg.id === newestAiReplyId
+                      ? {
+                          disabled: isLoading,
+                          // The chip row is replaced by the next reply: keep focus inside the panel. The
+                          // panel itself, not the message box, so a phone's keyboard does not pop up.
+                          onRemove: (chip) => { panelRef.current?.focus({ preventScroll: true }); sendAi(`Remove ${chip.label}`, "ai", chip.op); },
+                          onClear: () => { panelRef.current?.focus({ preventScroll: true }); sendAi("New search", "ai"); },
+                          ...(searchControls ? { onEdit: (opener: HTMLElement) => openEditor(opener) } : {}),
+                        }
+                      : undefined
+                  }
+                  draftActions={{
+                    live: msg.id === newestAiReplyId && !dismissedDrafts.has(msg.id),
+                    disabled: isLoading,
+                    onApply: (op, summary) => {
+                      setDismissedDrafts((s) => new Set(s).add(msg.id));
+                      applyOp(op, `Apply: ${summary}`);
+                    },
+                    onEdit: (opener) => openEditor(opener),
+                    onDiscard: () => {
+                      setDismissedDrafts((s) => new Set(s).add(msg.id));
+                      panelRef.current?.focus({ preventScroll: true });
+                    },
+                  }}
+                  onQuick={msg.id === newestAiReplyId && !isLoading ? (answer) => { panelRef.current?.focus({ preventScroll: true }); sendAi(answer, "ai", undefined, true); } : undefined}
+                />
               )
             )}
 
           {isLoading && (
             <div className="flex justify-start animate-fade-in-up">
               <div className="bg-white border border-gray-100 text-graphite rounded-2xl rounded-tl-sm py-3 px-4 shadow-sm flex items-center gap-2">
-                <div className="flex gap-1">
+                <div className="flex gap-1" aria-hidden="true">
                   <span className="w-1.5 h-1.5 bg-primaryGreen/50 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
                   <span className="w-1.5 h-1.5 bg-primaryGreen/50 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
                   <span className="w-1.5 h-1.5 bg-primaryGreen/50 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
                 </div>
+                {/* What the assistant is doing, when the server says so ("Searching stays…"). */}
+                <span className="text-[12px] text-gray-500">
+                  {effectiveMode === "ai" ? aiStatus ?? "Reading your message…" : <span className="sr-only">Typing</span>}
+                </span>
               </div>
             </div>
           )}
@@ -2155,7 +2402,7 @@ export const ChatWidget: React.FC = () => {
                     if (effectiveMode === "support") support.notifyTyping();
                   }}
                   onKeyDown={handleKeyDown}
-                  placeholder={effectiveMode === "ai" ? "Ask AI to find stays..." : "Type your message..."}
+                  placeholder={effectiveMode !== "ai" ? "Type your message..." : searchControls && !aiDraft ? "Use Set filters to search stays" : searchControls ? "Describe your stay..." : "Ask AI to find stays..."}
                   className="w-full bg-gray-100 border border-transparent text-graphite text-[14px] leading-5 rounded-[1.25rem] pl-4 pr-12 py-3 focus:outline-none focus:bg-white focus:border-primaryGreen focus:ring-1 focus:ring-primaryGreen transition-all placeholder:text-gray-400 disabled:opacity-60"
                   maxLength={2000}
                 />

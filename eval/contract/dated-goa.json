@@ -1,0 +1,617 @@
+{
+ "version": 1,
+ "query": "location=goa&from=2027-01-04&to=2027-01-07&limit=50",
+ "status": 200,
+ "body": {
+  "data": [
+   {
+    "_id": "6aaa62cddb103b9f57b82196",
+    "title": "Cabo Sarai : Sea view Luxury cottage",
+    "propertyType": "hotel",
+    "placeType": "room",
+    "guests": 2,
+    "bedrooms": 1,
+    "beds": 1,
+    "bathrooms": 1,
+    "amenities": [
+     "pool",
+     "outdoor-dining",
+     "beach",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 30000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "guests"
+    ],
+    "checkinTime": "15",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Canaguinim",
+     "city": "Canaguinim",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "6aa8f1bff9c2184c7e801de8",
+    "title": "Casa Singh: Luxury 4BHK Villa with Pool, Morjim",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 8,
+    "bedrooms": 4,
+    "beds": 4,
+    "bathrooms": 4,
+    "amenities": [
+     "pool",
+     "smoke-alarm",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 70000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "no_pets",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "14",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Morjim",
+     "city": "Morjim",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "6aa8ef589388fadc1d4308b6",
+    "title": "Casa Feliz — 4BHK Villa, Rooftop Pool, Near Anjuna Beach",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 8,
+    "bedrooms": 4,
+    "beds": 4,
+    "bathrooms": 4,
+    "amenities": [
+     "pool",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 35000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "no_pets",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "14",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Bouta Waddo",
+     "city": "Goa",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "6aa8da8f800ef490198436bc",
+    "title": "Lotus Villa - Luxury 4BHK Pool Villa in Mandrem, Goa",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 8,
+    "bedrooms": 4,
+    "beds": 4,
+    "bathrooms": 4,
+    "amenities": [
+     "pool",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 40000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "14",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Mandrem",
+     "city": "Goa",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "6aa8d20570e1b1b9173344ca",
+    "title": "Island House Goa: Heritage 7BHK Portuguese Villa",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 16,
+    "bedrooms": 7,
+    "beds": 8,
+    "bathrooms": 7,
+    "amenities": [
+     "pool",
+     "wifi",
+     "kitchen",
+     "air-conditioning"
+    ],
+    "basePrice": 75000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_parties",
+     "no_smoking"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "14",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Piedade",
+     "city": "Divar",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "6997e9fe31262c2b314b50dd",
+    "title": "Spacious 2BHK, AC, terrace, near beach, cozy & safe stay",
+    "propertyType": "guesthouse",
+    "placeType": "entire",
+    "guests": 4,
+    "bedrooms": 2,
+    "beds": 2,
+    "bathrooms": 2,
+    "amenities": [
+     "outdoor-dining",
+     "beach",
+     "first-aid",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 5000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": true,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties"
+    ],
+    "occupancy": [
+     "self-check-in",
+     "me"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "12",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Cavellosim madgao",
+     "city": "Goa",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "69625aab28280a3702cb4837",
+    "title": "JuBi Villa By Stay5Villas - Pvt Pool & Pet - Friendly - Assagao",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 10,
+    "bedrooms": 3,
+    "beds": 3,
+    "bathrooms": 3,
+    "amenities": [
+     "pool",
+     "bbq",
+     "outdoor-dining",
+     "pool-table",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 14000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_parties",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Bouta Waddo",
+     "city": "Assagao",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695dfd3dd59e14549511801e",
+    "title": "Luxury 1 BHK |5mins to Baga & Anjuna | Pool View",
+    "propertyType": "apartment",
+    "placeType": "entire",
+    "guests": 3,
+    "bedrooms": 1,
+    "beds": 1,
+    "bathrooms": 1,
+    "amenities": [
+     "pool",
+     "patio",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 3000,
+    "bookingType": {
+     "manual": false,
+     "instantBook": true,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_pets"
+    ],
+    "occupancy": [
+     "self-check-in",
+     "me"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Arpora",
+     "city": "Arpora",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695df91e5002b6b41ebac107",
+    "title": "Luxury 1 BHK | 5 mins to Baga & Anjuna | Balcony & Pool",
+    "propertyType": "apartment",
+    "placeType": "entire",
+    "guests": 4,
+    "bedrooms": 1,
+    "beds": 2,
+    "bathrooms": 1,
+    "amenities": [
+     "pool",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 3500,
+    "bookingType": {
+     "manual": false,
+     "instantBook": true,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_pets"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Arpora",
+     "city": "Arpora",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695df85ee471db23c5be9cf3",
+    "title": "A ideal place for peaceful staycation ",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 6,
+    "bedrooms": 2,
+    "beds": 4,
+    "bathrooms": 2,
+    "amenities": [
+     "outdoor-dining",
+     "firepit",
+     "lake",
+     "wifi",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 2000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_parties",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "me"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "North Goa",
+     "city": "Virnoda - Nagzor",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695bae50d5bf1dec4cc728c8",
+    "title": "Spacious 4BHK Villa with pool",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 12,
+    "bedrooms": 4,
+    "beds": 4,
+    "bathrooms": 4,
+    "amenities": [
+     "pool",
+     "bbq",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 18000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Bardez",
+     "city": "Bardez",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "693be2854a95981df40548b9",
+    "title": "A Plush 2 Bedroom Apartment With Wifi Facility ",
+    "propertyType": "apartment",
+    "placeType": "entire",
+    "guests": 5,
+    "bedrooms": 2,
+    "beds": 3,
+    "bathrooms": 2,
+    "amenities": [
+     "first-aid",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 4000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "quiet_hours",
+     "no_pets"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Colva ",
+     "city": "Seraulim",
+     "state": "Goa"
+    }
+   }
+  ],
+  "pagination": {
+   "totalCount": 12,
+   "totalPages": 1
+  },
+  "search": {
+   "mode": "place",
+   "query": "goa",
+   "place": {
+    "id": "st:goa",
+    "name": "Goa",
+    "type": "state",
+    "label": ""
+   },
+   "propertyType": null,
+   "corrected": false,
+   "alternatives": [],
+   "reason": null,
+   "nearestKm": null,
+   "suggestions": []
+  }
+ }
+}

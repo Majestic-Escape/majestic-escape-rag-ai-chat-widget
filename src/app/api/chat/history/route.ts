@@ -3,6 +3,11 @@ import { ObjectId } from "mongodb";
 import clientPromise from "@/lib/mongodb";
 import { verifyToken } from "@/lib/jwt";
 import { isAiEnabled } from "@/lib/aiToggle";
+import { guestIdForUnverifiedToken, isExpired, stateKey } from "@/lib/rag/state";
+import { istToday } from "@/lib/rag/dates";
+import { filterChips } from "@/lib/rag/reply";
+import { datedSearchEnabled, pipelineMode, productionDeps, searchMode } from "@/lib/rag/runtime";
+import { revalidate } from "@/lib/rag/understand";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,7 +49,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "invalid token identity" }, { status: 401 });
     }
   } else if (guestSessionId && typeof guestSessionId === "string" && guestSessionId.length <= 100) {
-    filter.guestSessionId = guestSessionId;
+    // same rule as POST /api/chat: an unverified token reads its own thread, never the plain guest one
+    filter.guestSessionId = bearer ? guestIdForUnverifiedToken(guestSessionId, bearer) : guestSessionId;
   } else {
     // No identity → no history to return.
     return NextResponse.json({ messages: [] });
@@ -64,5 +70,34 @@ export async function GET(req: NextRequest) {
 
   // Return ascending so the client can render in chronological order.
   rows.reverse();
-  return NextResponse.json({ messages: rows });
+  // Availability is only true at the moment it was checked. Rows saved before
+  // the search pipeline carry a "booked for your dates" flag that would be
+  // replayed as if it were current — drop it on the way out.
+  for (const row of rows) {
+    if (Array.isArray(row.properties)) {
+      for (const card of row.properties) {
+        delete card.partiallyBooked;
+        if (card.availability !== undefined) card.availability = "recheck";
+      }
+    }
+  }
+  // Filters mode: the search as it stands, so a reloaded page shows the applied filters (chips) and the editor
+  // starts from them. Best effort: without it the history still loads.
+  let current: { search: Record<string, unknown>; filters: unknown[] } | undefined;
+  if (pipelineMode() === "v2" && searchMode() === "filters") {
+    try {
+      const key = stateKey(userIdRaw, (filter.guestSessionId as string | undefined) ?? null);
+      const doc = key ? await (await productionDeps()).store.load(key) : null;
+      if (doc && !isExpired(doc, Date.now())) {
+        const today = istToday(new Date());
+        const { shownIds: _s, consentFor: _c, ...all } = revalidate(doc.state, today).state;
+        const { checkIn: _i, checkOut: _o, nights: _n, ...undated } = all;
+        const search = datedSearchEnabled() ? all : undated; // the same rule as the chat route
+        current = { search, filters: filterChips(search, today) };
+      }
+    } catch {
+      /* the history alone */
+    }
+  }
+  return NextResponse.json({ messages: rows, ...(current ?? {}) });
 }

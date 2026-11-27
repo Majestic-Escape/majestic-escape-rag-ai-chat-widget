@@ -1,0 +1,227 @@
+{
+ "version": 1,
+ "query": "location=anjuna&limit=50",
+ "status": 200,
+ "body": {
+  "data": [
+   {
+    "_id": "6aa8ef589388fadc1d4308b6",
+    "title": "Casa Feliz — 4BHK Villa, Rooftop Pool, Near Anjuna Beach",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 8,
+    "bedrooms": 4,
+    "beds": 4,
+    "bathrooms": 4,
+    "amenities": [
+     "pool",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 35000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "no_pets",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "14",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "distanceKm": 2.6,
+    "address": {
+     "district": "Bouta Waddo",
+     "city": "Goa",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695dfefcdd1bc086fa751e48",
+    "title": "Luxury 1BHK| 5 mins to Baga & Anjuna |Pool & Balcony",
+    "propertyType": "apartment",
+    "placeType": "entire",
+    "guests": 3,
+    "bedrooms": 1,
+    "beds": 1,
+    "bathrooms": 1,
+    "amenities": [
+     "pool",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 3000,
+    "bookingType": {
+     "manual": false,
+     "instantBook": true,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_pets"
+    ],
+    "occupancy": [
+     "self-check-in",
+     "me"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "distanceKm": 2.6,
+    "address": {
+     "district": "Arpora",
+     "city": "Arpora",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695dfd3dd59e14549511801e",
+    "title": "Luxury 1 BHK |5mins to Baga & Anjuna | Pool View",
+    "propertyType": "apartment",
+    "placeType": "entire",
+    "guests": 3,
+    "bedrooms": 1,
+    "beds": 1,
+    "bathrooms": 1,
+    "amenities": [
+     "pool",
+     "patio",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 3000,
+    "bookingType": {
+     "manual": false,
+     "instantBook": true,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_pets"
+    ],
+    "occupancy": [
+     "self-check-in",
+     "me"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "distanceKm": 2.6,
+    "address": {
+     "district": "Arpora",
+     "city": "Arpora",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695df91e5002b6b41ebac107",
+    "title": "Luxury 1 BHK | 5 mins to Baga & Anjuna | Balcony & Pool",
+    "propertyType": "apartment",
+    "placeType": "entire",
+    "guests": 4,
+    "bedrooms": 1,
+    "beds": 2,
+    "bathrooms": 1,
+    "amenities": [
+     "pool",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 3500,
+    "bookingType": {
+     "manual": false,
+     "instantBook": true,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_pets"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "distanceKm": 2.7,
+    "address": {
+     "district": "Arpora",
+     "city": "Arpora",
+     "state": "Goa"
+    }
+   }
+  ],
+  "pagination": {
+   "totalCount": 4,
+   "totalPages": 1
+  },
+  "search": {
+   "mode": "place",
+   "query": "anjuna",
+   "place": {
+    "id": "gn:1278566",
+    "name": "Anjuna",
+    "type": "town",
+    "label": "North Goa, Goa"
+   },
+   "propertyType": null,
+   "corrected": false,
+   "alternatives": [],
+   "reason": null,
+   "nearestKm": null,
+   "suggestions": []
+  }
+ }
+}

@@ -1,0 +1,175 @@
+{
+ "version": 1,
+ "query": "limit=16&page=2",
+ "status": 200,
+ "body": {
+  "data": [
+   {
+    "_id": "695bae50d5bf1dec4cc728c8",
+    "title": "Spacious 4BHK Villa with pool",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 12,
+    "bedrooms": 4,
+    "beds": 4,
+    "bathrooms": 4,
+    "amenities": [
+     "pool",
+     "bbq",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 18000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Bardez",
+     "city": "Bardez",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695b6b5a606039cd1fb0055e",
+    "title": "Independent Private Villa",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 8,
+    "bedrooms": 4,
+    "beds": 4,
+    "bathrooms": 4,
+    "amenities": [
+     "patio",
+     "bbq",
+     "outdoor-dining",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 11999,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "self-check-in",
+     "me"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Dewas Road ",
+     "city": "Ujjain",
+     "state": "Madhya Pradesh"
+    }
+   },
+   {
+    "_id": "693be2854a95981df40548b9",
+    "title": "A Plush 2 Bedroom Apartment With Wifi Facility ",
+    "propertyType": "apartment",
+    "placeType": "entire",
+    "guests": 5,
+    "bedrooms": 2,
+    "beds": 3,
+    "bathrooms": 2,
+    "amenities": [
+     "first-aid",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 4000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "quiet_hours",
+     "no_pets"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Colva ",
+     "city": "Seraulim",
+     "state": "Goa"
+    }
+   }
+  ],
+  "pagination": {
+   "totalCount": 19,
+   "totalPages": 2
+  },
+  "search": {
+   "mode": "all",
+   "query": null,
+   "place": null,
+   "propertyType": null,
+   "corrected": false,
+   "alternatives": [],
+   "reason": null,
+   "nearestKm": null,
+   "suggestions": []
+  }
+ }
+}

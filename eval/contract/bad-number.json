@@ -1,0 +1,13 @@
+{
+ "version": 1,
+ "query": "location=goa&maxPrice=5,000&limit=50",
+ "status": 400,
+ "body": {
+  "success": false,
+  "code": "INVALID_SEARCH_PARAM",
+  "param": "maxPrice",
+  "error": "maxPrice must be an amount",
+  "message": "maxPrice must be an amount",
+  "statusCode": 400
+ }
+}

@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Message, ChatMode, PropertyCardData } from "./types";
+import { Message, ChatMode, PropertyCardData, FilterChip, FilterOp, SearchFilters, Draft } from "./types";
 import { getAuthToken, getBackendUrl, getOrCreateGuestId } from "./utils";
 
 const AI_GREETING: Message = {
@@ -36,6 +36,10 @@ export function useChat() {
   const historyGenRef = useRef(0);
   // The reply being streamed, so forgetAi() can stop it.
   const replyRef = useRef<AbortController | null>(null);
+  // The "Start fresh" request still on its way to the server, if any.
+  const resetRef = useRef<Promise<void> | null>(null);
+  // What the assistant says it is doing while a reply is on its way ("Searching stays…").
+  const [aiStatus, setAiStatus] = useState<string | null>(null);
 
   const loadAiHistoryOnce = useCallback(async () => {
     if (aiHistoryLoadedRef.current) return;
@@ -43,7 +47,8 @@ export function useChat() {
     const gen = historyGenRef.current;
     try {
       const token = getAuthToken();
-      const guestSessionId = token ? null : getOrCreateGuestId();
+      // Sent with a token too (as when sending): an expired token falls back to the guest id on the server.
+      const guestSessionId = getOrCreateGuestId();
       const headers: Record<string, string> = {};
       if (token) headers.Authorization = `Bearer ${token}`;
       const params = new URLSearchParams();
@@ -60,18 +65,25 @@ export function useChat() {
           createdAt: string;
           properties?: PropertyCardData[];
         }>;
+        /** Filters mode: the current search, shown as the newest restored reply's chips. */
+        search?: SearchFilters;
+        filters?: FilterChip[];
       };
       const rows = data.messages ?? [];
       if (gen !== historyGenRef.current || rows.length === 0) return;
+      const newestReply = rows.map((r) => r.role).lastIndexOf("model");
       setAiMessages((prev) => {
         if (prev.length > 1) return prev;
+        // the saved text keeps its filters line; where the chips are shown, drop that line (it would say it twice)
+        const filtersLine = data.filters?.map((c) => c.label).join(" · ");
         const restored: Message[] = rows.map((r, i) => ({
           id: `restored-${i}-${r.createdAt}`,
           role: r.role,
-          text: r.text,
+          text: i === newestReply && filtersLine && data.search ? r.text.split("\n").filter((l) => l !== filtersLine).join("\n") || r.text : r.text,
           timestamp: new Date(r.createdAt),
           isSupport: false,
           ...(r.properties && r.properties.length > 0 ? { properties: r.properties } : {}),
+          ...(i === newestReply && data.search && Array.isArray(data.filters) ? { search: data.search, filters: data.filters } : {}),
         }));
         return [AI_GREETING, ...restored];
       });
@@ -103,12 +115,13 @@ export function useChat() {
   }, []);
 
   const sendMessage = useCallback(
-    async (text: string, mode: ChatMode) => {
+    // `op`: a filter chip the customer removed — the server applies it as it is.
+    // `quick`: a quick-answer button ("Yes, show them"); the server answers it without a model.
+    async (text: string, mode: ChatMode, op?: FilterOp, quick?: boolean) => {
       if (!text.trim()) return;
 
       const isAi = mode === "ai";
       const setActive = isAi ? setAiMessages : setSupportMessages;
-      const activeMessages = isAi ? aiMessages : supportMessages;
 
       const userMsg: Message = {
         id: `${mode}-${Date.now()}`,
@@ -117,10 +130,6 @@ export function useChat() {
         timestamp: new Date(),
         isSupport: !isAi,
       };
-
-      const historyForApi = activeMessages
-        .filter((m) => !m.id.startsWith("init-"))
-        .map((m) => ({ role: m.role, text: m.text }));
 
       setActive((prev) => [...prev, userMsg]);
       setIsLoading(true);
@@ -141,18 +150,27 @@ export function useChat() {
       replyRef.current = reply;
       try {
         const token = getAuthToken();
-        const guestSessionId = token ? null : getOrCreateGuestId();
+        // Always sent: the server ignores it for a valid sign-in, and falls back to it
+        // when the token has expired — otherwise that visitor would have no memory at all.
+        const guestSessionId = getOrCreateGuestId();
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         if (token) headers.Authorization = `Bearer ${token}`;
 
+        await resetRef.current;
         const res = await fetch(`${getBackendUrl()}/api/chat`, {
           method: "POST",
           headers,
           body: JSON.stringify({
+            // No history is sent: the server keeps the search it understood so far,
+            // per signed-in person or guest id.
             message: text.trim(),
-            history: historyForApi,
             mode,
             guestSessionId,
+            // This bundle understands `[META]` lines (status, filter chips, headings) and, since caps 2, the
+            // filter editor, drafts and quick answers.
+            caps: 2,
+            ...(op ? { op } : {}),
+            ...(quick ? { quick: true } : {}),
           }),
           signal: reply.signal,
         });
@@ -176,6 +194,13 @@ export function useChat() {
           }
         }
 
+        // Our own limits: say which one, not "trouble connecting" (which invites retrying at once).
+        if (res.status === 429) {
+          const why = ((await res.json().catch(() => null)) as { error?: unknown } | null)?.error;
+          setError(typeof why === "string" ? why : "Too many requests, please slow down.");
+          setActive((prev) => prev.filter((m) => m.id !== modelMsgId));
+          return; // `finally` still clears isLoading
+        }
         if (!res.ok || !res.body) throw new Error("Network error");
 
         const reader = res.body.getReader();
@@ -208,6 +233,36 @@ export function useChat() {
               continue;
             }
 
+            if (payload.startsWith("[META]")) {
+              try {
+                const meta = JSON.parse(payload.slice(6)) as {
+                  status?: string; filters?: FilterChip[]; heading?: string | null;
+                  search?: SearchFilters; draft?: Draft; controls?: { draft: boolean }; quick?: string[];
+                };
+                if (typeof meta.status === "string") setAiStatus(meta.status);
+                if (Array.isArray(meta.filters)) {
+                  setActive((prev) =>
+                    prev.map((m) =>
+                      m.id === modelMsgId
+                        ? {
+                            ...m,
+                            filters: meta.filters,
+                            heading: meta.heading ?? null,
+                            ...(meta.search && typeof meta.search === "object" ? { search: meta.search } : {}),
+                            ...(meta.draft && Array.isArray(meta.draft.lines) ? { draft: meta.draft } : {}),
+                            ...(meta.controls ? { controls: meta.controls } : {}),
+                            ...(Array.isArray(meta.quick) ? { quick: meta.quick.filter((q) => typeof q === "string") } : {}),
+                          }
+                        : m
+                    )
+                  );
+                }
+              } catch {
+                /* malformed payload — ignore */
+              }
+              continue;
+            }
+
             const chunk = payload.replace(/\\n/g, "\n");
             setActive((prev) =>
               prev.map((m) =>
@@ -225,16 +280,31 @@ export function useChat() {
         if (replyRef.current === reply) {
           replyRef.current = null;
           setIsLoading(false);
+          setAiStatus(null);
         }
       }
     },
-    [aiMessages, supportMessages]
+    []
   );
 
   const resetAiMessages = useCallback(() => {
     setAiMessages([AI_GREETING]);
     aiHistoryLoadedRef.current = true;
     setAiHistoryReady(true);
+    // Clear the search the server remembers too, or the next message would
+    // quietly inherit the old place, dates and budget.
+    // The next message waits for it (resetRef), so the reset can never land after it.
+    const token = getAuthToken();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    resetRef.current = fetch(`${getBackendUrl()}/api/chat`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ message: "new search", mode: "ai", guestSessionId: getOrCreateGuestId(), reset: true, caps: 2 }),
+    }).then(
+      () => undefined,
+      () => undefined
+    );
   }, []);
 
   // The signed-in person changed: drop their conversation, and look the next
@@ -262,5 +332,6 @@ export function useChat() {
     resetAiMessages,
     aiHistoryReady,
     forgetAi,
+    aiStatus,
   };
 }

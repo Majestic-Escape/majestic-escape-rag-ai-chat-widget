@@ -1,0 +1,796 @@
+{
+ "version": 1,
+ "query": "",
+ "status": 200,
+ "body": {
+  "data": [
+   {
+    "_id": "6aaa743c53a17339b4ff4620",
+    "title": "Dev Bhoomi Retreat - Classic Tent",
+    "propertyType": "tent",
+    "placeType": "room",
+    "guests": 2,
+    "bedrooms": 1,
+    "beds": 2,
+    "bathrooms": 1,
+    "amenities": [
+     "lake",
+     "fire-extinguisher",
+     "wifi",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 10000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "guests"
+    ],
+    "checkinTime": "14",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Dari",
+     "city": "Dharamshala",
+     "state": "Himachal Pradesh"
+    }
+   },
+   {
+    "_id": "6aaa716708ebff2c65344dfa",
+    "title": "Revathi Resorts - Standard Room",
+    "propertyType": "hotel",
+    "placeType": "room",
+    "guests": 2,
+    "bedrooms": 1,
+    "beds": 1,
+    "bathrooms": 1,
+    "amenities": [
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "free-parking",
+     "workspace"
+    ],
+    "basePrice": 7500,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "no_pets",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "guests"
+    ],
+    "checkinTime": "14",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Narendra Nagar",
+     "city": "Narendra Nagar",
+     "state": "Uttarakhand"
+    }
+   },
+   {
+    "_id": "6aaa62cddb103b9f57b82196",
+    "title": "Cabo Sarai : Sea view Luxury cottage",
+    "propertyType": "hotel",
+    "placeType": "room",
+    "guests": 2,
+    "bedrooms": 1,
+    "beds": 1,
+    "bathrooms": 1,
+    "amenities": [
+     "pool",
+     "outdoor-dining",
+     "beach",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 30000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "guests"
+    ],
+    "checkinTime": "15",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Canaguinim",
+     "city": "Canaguinim",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "6aa8f1bff9c2184c7e801de8",
+    "title": "Casa Singh: Luxury 4BHK Villa with Pool, Morjim",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 8,
+    "bedrooms": 4,
+    "beds": 4,
+    "bathrooms": 4,
+    "amenities": [
+     "pool",
+     "smoke-alarm",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 70000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "no_pets",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "14",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Morjim",
+     "city": "Morjim",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "6aa8ef589388fadc1d4308b6",
+    "title": "Casa Feliz — 4BHK Villa, Rooftop Pool, Near Anjuna Beach",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 8,
+    "bedrooms": 4,
+    "beds": 4,
+    "bathrooms": 4,
+    "amenities": [
+     "pool",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 35000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties",
+     "no_pets",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "14",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Bouta Waddo",
+     "city": "Goa",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "6aa8da8f800ef490198436bc",
+    "title": "Lotus Villa - Luxury 4BHK Pool Villa in Mandrem, Goa",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 8,
+    "bedrooms": 4,
+    "beds": 4,
+    "bathrooms": 4,
+    "amenities": [
+     "pool",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 40000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "14",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Mandrem",
+     "city": "Goa",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "6aa8d20570e1b1b9173344ca",
+    "title": "Island House Goa: Heritage 7BHK Portuguese Villa",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 16,
+    "bedrooms": 7,
+    "beds": 8,
+    "bathrooms": 7,
+    "amenities": [
+     "pool",
+     "wifi",
+     "kitchen",
+     "air-conditioning"
+    ],
+    "basePrice": 75000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "no_parties",
+     "no_smoking"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "14",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Piedade",
+     "city": "Divar",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "69a6b2704df22729dbd43fd0",
+    "title": "The Bhairon Niwas Heritage ",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 15,
+    "bedrooms": 5,
+    "beds": 5,
+    "bathrooms": 6,
+    "amenities": [
+     "bbq",
+     "outdoor-dining",
+     "firepit",
+     "lake",
+     "wifi",
+     "kitchen",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 15000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_smoking"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "12",
+    "checkoutTime": "11",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Gopal Nagar",
+     "city": "Kanota",
+     "state": "Rajasthan"
+    }
+   },
+   {
+    "_id": "6997e9fe31262c2b314b50dd",
+    "title": "Spacious 2BHK, AC, terrace, near beach, cozy & safe stay",
+    "propertyType": "guesthouse",
+    "placeType": "entire",
+    "guests": 4,
+    "bedrooms": 2,
+    "beds": 2,
+    "bathrooms": 2,
+    "amenities": [
+     "outdoor-dining",
+     "beach",
+     "first-aid",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 5000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": true,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_smoking",
+     "no_parties"
+    ],
+    "occupancy": [
+     "self-check-in",
+     "me"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "12",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Cavellosim madgao",
+     "city": "Goa",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "696336b1266f03be890c2195",
+    "title": "Kamlam Homes - Orchid",
+    "propertyType": "house",
+    "placeType": "entire",
+    "guests": 4,
+    "bedrooms": 2,
+    "beds": 2,
+    "bathrooms": 2,
+    "amenities": [
+     "wifi",
+     "tv",
+     "kitchen",
+     "free-parking",
+     "air-conditioning",
+     "workspace"
+    ],
+    "basePrice": 2500,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": true,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_parties",
+     "no_pets",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Sahara States, Jankipuram ",
+     "city": "Lucknow",
+     "state": "Uttar Pradesh"
+    }
+   },
+   {
+    "_id": "69625aab28280a3702cb4837",
+    "title": "JuBi Villa By Stay5Villas - Pvt Pool & Pet - Friendly - Assagao",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 10,
+    "bedrooms": 3,
+    "beds": 3,
+    "bathrooms": 3,
+    "amenities": [
+     "pool",
+     "bbq",
+     "outdoor-dining",
+     "pool-table",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 14000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_parties",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Bouta Waddo",
+     "city": "Assagao",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695f08c6da30f4c155241a32",
+    "title": "Dholavira homestay ",
+    "propertyType": "farmhouse",
+    "placeType": "room",
+    "guests": 8,
+    "bedrooms": 4,
+    "beds": 4,
+    "bathrooms": 4,
+    "amenities": [
+     "outdoor-dining",
+     "smoke-alarm",
+     "first-aid",
+     "wifi",
+     "kitchen",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 5000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": false,
+     "flexible": false,
+     "strict": true
+    },
+    "selectedRules": [
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "me"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Kutch ",
+     "city": "Amarapar",
+     "state": "Gujarat"
+    }
+   },
+   {
+    "_id": "695dfefcdd1bc086fa751e48",
+    "title": "Luxury 1BHK| 5 mins to Baga & Anjuna |Pool & Balcony",
+    "propertyType": "apartment",
+    "placeType": "entire",
+    "guests": 3,
+    "bedrooms": 1,
+    "beds": 1,
+    "bathrooms": 1,
+    "amenities": [
+     "pool",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 3000,
+    "bookingType": {
+     "manual": false,
+     "instantBook": true,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_pets"
+    ],
+    "occupancy": [
+     "self-check-in",
+     "me"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Arpora",
+     "city": "Arpora",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695dfd3dd59e14549511801e",
+    "title": "Luxury 1 BHK |5mins to Baga & Anjuna | Pool View",
+    "propertyType": "apartment",
+    "placeType": "entire",
+    "guests": 3,
+    "bedrooms": 1,
+    "beds": 1,
+    "bathrooms": 1,
+    "amenities": [
+     "pool",
+     "patio",
+     "first-aid",
+     "fire-extinguisher",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 3000,
+    "bookingType": {
+     "manual": false,
+     "instantBook": true,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_pets"
+    ],
+    "occupancy": [
+     "self-check-in",
+     "me"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Arpora",
+     "city": "Arpora",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695df91e5002b6b41ebac107",
+    "title": "Luxury 1 BHK | 5 mins to Baga & Anjuna | Balcony & Pool",
+    "propertyType": "apartment",
+    "placeType": "entire",
+    "guests": 4,
+    "bedrooms": 1,
+    "beds": 2,
+    "bathrooms": 1,
+    "amenities": [
+     "pool",
+     "wifi",
+     "tv",
+     "kitchen",
+     "washing",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 3500,
+    "bookingType": {
+     "manual": false,
+     "instantBook": true,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_pets"
+    ],
+    "occupancy": [
+     "self-check-in"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "Arpora",
+     "city": "Arpora",
+     "state": "Goa"
+    }
+   },
+   {
+    "_id": "695df85ee471db23c5be9cf3",
+    "title": "A ideal place for peaceful staycation ",
+    "propertyType": "villa",
+    "placeType": "entire",
+    "guests": 6,
+    "bedrooms": 2,
+    "beds": 4,
+    "bathrooms": 2,
+    "amenities": [
+     "outdoor-dining",
+     "firepit",
+     "lake",
+     "wifi",
+     "free-parking",
+     "air-conditioning"
+    ],
+    "basePrice": 2000,
+    "bookingType": {
+     "manual": true,
+     "instantBook": false,
+     "flashBook": false
+    },
+    "cancellationType": {
+     "moderate": true,
+     "flexible": false,
+     "strict": false
+    },
+    "selectedRules": [
+     "no_parties",
+     "quiet_hours"
+    ],
+    "occupancy": [
+     "me"
+    ],
+    "checkinTime": "11",
+    "checkoutTime": "14",
+    "status": "active",
+    "averageRating": 0,
+    "reviewCount": 0,
+    "address": {
+     "district": "North Goa",
+     "city": "Virnoda - Nagzor",
+     "state": "Goa"
+    }
+   }
+  ],
+  "pagination": {
+   "totalCount": 19,
+   "totalPages": 2
+  },
+  "search": {
+   "mode": "all",
+   "query": null,
+   "place": null,
+   "propertyType": null,
+   "corrected": false,
+   "alternatives": [],
+   "reason": null,
+   "nearestKm": null,
+   "suggestions": []
+  }
+ }
+}
