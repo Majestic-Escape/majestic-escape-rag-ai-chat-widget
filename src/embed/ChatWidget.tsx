@@ -1679,13 +1679,16 @@ export const ChatWidget: React.FC = () => {
     // and Android Chrome still let touchmove scroll the page when the user
     // drags on a non-scrollable element (the panel header, the input
     // wrapper, the backdrop). We block touchmove globally and only allow it
-    // inside the messages list so chat scrolling still works. `passive:
+    // inside the messages list so chat scrolling still works, and inside any
+    // other scroll area of the panel marked `data-mc-scroll` (the filter
+    // sheet: without the mark a finger could not scroll it). `passive:
     // false` is required to call preventDefault.
     const preventTouchScroll = (e: TouchEvent) => {
       if (!mql.matches) return;
       const path = e.composedPath();
       const messagesEl = messagesScrollRef.current;
       if (messagesEl && path.includes(messagesEl)) return;
+      if (path.some((n) => n instanceof HTMLElement && n.hasAttribute("data-mc-scroll"))) return;
       e.preventDefault();
     };
     document.addEventListener("touchmove", preventTouchScroll, { passive: false });
@@ -1742,6 +1745,20 @@ export const ChatWidget: React.FC = () => {
     const panel = panelRef.current;
     const insetProbe = insetProbeRef.current;
     if (!host || !vv || !panel) return;
+    // While the panel is open, the keyboard resizes the page instead of
+    // covering it (`interactive-widget=resizes-content`), and the host's own
+    // viewport setting comes back exactly on close. Chrome's new bottom bar
+    // (Nov 2026) otherwise reported the keyboard 60 px higher than it is
+    // (visualViewport and navigator.virtualKeyboard alike), leaving a band
+    // between the message box and the keyboard; resized, the visible height
+    // is the real one. Browsers without the setting ignore it (old Chrome
+    // already resized; iOS Safari never reads it).
+    const viewportMeta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    const hostViewport = viewportMeta?.getAttribute("content") ?? null;
+    if (viewportMeta && hostViewport !== null) {
+      const kept = hostViewport.split(",").map((s) => s.trim()).filter((s) => s && !/^interactive-widget\s*=/i.test(s));
+      viewportMeta.setAttribute("content", [...kept, "interactive-widget=resizes-content"].join(", "));
+    }
     const readInset = () => (insetProbe ? parseFloat(getComputedStyle(insetProbe).paddingBottom) || 0 : 0);
     let restingHeight = 0;
     let restingWidth = window.innerWidth;
@@ -1767,9 +1784,13 @@ export const ChatWidget: React.FC = () => {
         // the keyboard — 24px on a Pixel, enough to hide the message box's
         // lower edge. Take off whatever inset the keyboard made disappear.
         // (iOS keeps its inset while typing, and its viewport is right.)
+        // Only when the page kept its size under the keyboard: when it was
+        // resized (resizes-content, set above; Chrome before 108), the
+        // visible height is already right and this took 24 px too many.
         const inset = readInset();
         if (!keyboardUp) restingInset = inset;
-        const behindKeyboard = keyboardUp ? Math.max(0, restingInset - inset) : 0;
+        const pageResized = Math.abs(window.innerHeight - height) < 1;
+        const behindKeyboard = keyboardUp && !pageResized ? Math.max(0, restingInset - inset) : 0;
         host.style.setProperty("--mc-vvh", `${height - behindKeyboard}px`);
         // `offsetTop` shifts when iOS/Android moves the visual viewport down
         // to keep the focused input visible while the keyboard is up. Pinning
@@ -1815,11 +1836,15 @@ export const ChatWidget: React.FC = () => {
     // focus; Android Chrome fires `resize`. Listen to both for cross-OS cover.
     vv.addEventListener("resize", onChange);
     vv.addEventListener("scroll", onChange);
+    // a resized page always fires this one (the visual viewport's own event was missing once)
+    window.addEventListener("resize", onChange);
     mql.addEventListener("change", onChange);
     return () => {
+      if (viewportMeta && hostViewport !== null) viewportMeta.setAttribute("content", hostViewport);
       cancelAnimationFrame(settleFrame);
       vv.removeEventListener("resize", onChange);
       vv.removeEventListener("scroll", onChange);
+      window.removeEventListener("resize", onChange);
       mql.removeEventListener("change", onChange);
       settleTimerRef.current = setTimeout(() => {
         host.style.removeProperty("--mc-vvh");

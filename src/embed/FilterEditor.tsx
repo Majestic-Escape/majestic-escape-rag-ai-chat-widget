@@ -11,9 +11,9 @@ const AMENITIES: [string, string][] = [
   ["outdoor-dining", "Outdoor dining"], ["patio", "Patio"], ["beach", "Beach access"], ["lake", "Lakeside"],
   ["pool-table", "Pool table"], ["first-aid", "First aid kit"], ["smoke-alarm", "Smoke alarm"], ["fire-extinguisher", "Fire extinguisher"],
 ];
-const TYPES: [string, string][] = [["", "Any type"], ["villa", "Villa"], ["apartment", "Apartment"], ["house", "House"], ["guesthouse", "Guesthouse / homestay"], ["hotel", "Hotel"], ["farmhouse", "Farmhouse"], ["tent", "Tent"]];
+const TYPES: [string, string][] = [["", "Any"], ["villa", "Villa"], ["apartment", "Apartment"], ["house", "House"], ["guesthouse", "Guesthouse / homestay"], ["hotel", "Hotel"], ["farmhouse", "Farmhouse"], ["tent", "Tent"]];
 const PLACE_TYPES: [string, string][] = [["", "Any"], ["entire", "Entire place"], ["room", "A room"]];
-const CANCELLATION: [string, string][] = [["", "Any cancellation"], ["flexible", "Flexible"], ["moderate", "Moderate"], ["strict", "Strict"]];
+const CANCELLATION: [string, string][] = [["", "Any"], ["flexible", "Flexible"], ["moderate", "Moderate"], ["strict", "Strict"]];
 
 interface Form {
   place: string; guests: string; priceMin: string; priceMax: string; bedrooms: string; bathrooms: string;
@@ -150,19 +150,30 @@ export const FilterEditor: React.FC<{
       <input inputMode="numeric" pattern="[0-9]*" value={form[k]} onChange={(e) => set(k, e.target.value.replace(/[^0-9]/g, ""))} placeholder={hint ?? "Any"} className={field} />
     </label>
   );
-  const select = (k: "propertyType" | "placeType" | "cancellation", text: string, options: [string, string][]) => (
-    <label className="block">
-      <span className={caption}>{text}</span>
-      {/* The browser's own arrow sat on the border with no room for the text (Windows Chrome): ours has its own space. */}
-      <span className="relative block">
-        <select value={form[k]} onChange={(e) => set(k, e.target.value)} className={`${field} appearance-none pr-9 truncate cursor-pointer`}>
-          {options.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
-        </select>
-        <svg aria-hidden="true" viewBox="0 0 20 20" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500">
-          <path d="M5 7.5l5 5 5-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </span>
-    </label>
+  // Pick-one chips, styled like "Must have". Native dropdowns opened an OS list (blue, wider than the panel on
+  // Windows) that no CSS reaches. Real radio inputs keep the group semantics and arrow-key movement.
+  const choice = (k: "propertyType" | "placeType" | "cancellation", text: string, options: [string, string][]) => (
+    <fieldset>
+      <legend className={caption}>{text}</legend>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map(([v, t]) => {
+          const on = form[k] === v;
+          return (
+            <label key={v} className="relative cursor-pointer">
+              <input type="radio" name={`mc-filter-${k}`} value={v} checked={on} onChange={() => set(k, v)} className="peer sr-only" />
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border text-[12px] font-medium px-2.5 py-1 min-h-[32px] whitespace-nowrap peer-focus-visible:ring-2 peer-focus-visible:ring-primaryGreen peer-focus-visible:ring-offset-1 ${
+                  on ? "border-primaryGreen bg-lightGreen/50 text-primaryGreen" : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                {on && <Check className="w-3 h-3" aria-hidden="true" />}
+                {t}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
   );
 
   // The sheet waits below the panel while closed. `overflow-clip` (not `hidden`) on this wrapper: clip makes no
@@ -189,7 +200,7 @@ export const FilterEditor: React.FC<{
           </button>
         </div>
         <form onSubmit={submit} className="flex flex-col min-h-0 flex-1">
-          <div className="overflow-y-auto px-4 py-3 flex flex-col gap-3">
+          <div data-mc-scroll className="overflow-y-auto overscroll-contain px-4 py-3 flex flex-col gap-3">
             <label className="block">
               <span className={caption}>Where</span>
               <input value={form.place} onChange={(e) => set("place", e.target.value.slice(0, 80))} placeholder="City, area or stay name" autoComplete="off" className={field} />
@@ -197,20 +208,16 @@ export const FilterEditor: React.FC<{
             <div className="grid grid-cols-2 gap-3">
               {num("guests", "Guests")}
               {num("bedrooms", "Bedrooms (at least)")}
+              {num("bathrooms", "Bathrooms (at least)")}
             </div>
             <div className="grid grid-cols-2 gap-3">
               {num("priceMin", "Min ₹ per night")}
               {num("priceMax", "Max ₹ per night")}
             </div>
             <p className="text-[11px] text-gray-500 -mt-1">Nightly base price, before taxes and fees. The stay page shows the total for your dates.</p>
-            <div className="grid grid-cols-2 gap-3">
-              {num("bathrooms", "Bathrooms (at least)")}
-              {select("propertyType", "Type", TYPES)}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              {select("placeType", "Entire place or room", PLACE_TYPES)}
-              {select("cancellation", "Cancellation", CANCELLATION)}
-            </div>
+            {choice("propertyType", "Type", TYPES)}
+            {choice("placeType", "Entire place or room", PLACE_TYPES)}
+            {choice("cancellation", "Cancellation", CANCELLATION)}
             <fieldset>
               <legend className={caption}>Must have</legend>
               <div className="flex flex-wrap gap-1.5">
