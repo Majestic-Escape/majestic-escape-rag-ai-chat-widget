@@ -366,6 +366,12 @@ them like a real ball. The owner's rules, each asserted by
 - Attributes are set imperatively from refs (no React render per frame);
   `Mascot` is memoised on `active` so a parent render never resets them.
 - No `url(#id)` gradients in its SVG (fragile inside a Shadow Root): plain fills.
+- `region()` cuts the visor where it goes behind the sphere and follows the
+  sphere's outline there. Never "pin" hidden points to the outline instead: once
+  the visor wraps past the back of the head (early in the spin) the pinned points
+  land on the far side and the visor covered the whole orb, a dark disc for
+  ~0.1 s that the owner caught on a phone. `verify:mascot` now checks the drawn
+  visor area every 5 ms (never bigger than facing you, never jumping).
 - Hover/focus rules in `styles.css` override the animated opacity attributes
   and declare their transition only in the hover state, so the script's per-frame
   changes are never eased; they are off while `data-greeting` is set.

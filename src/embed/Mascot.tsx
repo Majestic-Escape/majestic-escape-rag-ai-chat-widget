@@ -73,6 +73,8 @@ export type Geo = { roll: string; markM: string; markO: string; visor: string; v
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 const f3 = (v: number) => v.toFixed(3);
 const D2R = Math.PI / 180;
+const TAU = 2 * Math.PI;
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 // The head looks very slightly down at rest, so the visor's lower edge curves
 // like a smile instead of sitting dead flat.
 const BASE_PITCH = -6;
@@ -85,20 +87,49 @@ export function geometry(p: Pose): Geo {
     const x = c * Math.sin(lo), y = Math.sin(la), z = c * Math.cos(lo);
     return [x, -(y * cp + z * sp), -y * sp + z * cp];
   };
-  // A rounded patch of the sphere (superellipse in lat/lon). Points that have
-  // rotated behind the sphere are pinned to its edge, so the patch wraps.
+  // A point on the sphere's outline (screen angle `ang`, z = 0) back to lat/lon.
+  const outlineToLatLon = (ang: number): [number, number] => {
+    const X = Math.cos(ang), Y = Math.sin(ang);
+    return [Math.asin(clamp(-Y * cp, -1, 1)) / D2R, Math.atan2(X, -Y * sp) / D2R - p.yaw];
+  };
+  // A rounded patch of the sphere (superellipse in lat/lon), cut where it goes
+  // behind the sphere: the cut follows the sphere's outline. (Pinning hidden
+  // points to the outline instead drew the visor over the whole orb while it
+  // wrapped past the back of the head, early in the spin.)
   const region = (lonC: number, lonH: number, latC: number, latH: number, n: number, N: number) => {
-    let d = "", maxZ = -1;
+    const inside = (lat: number, lon: number) =>
+      Math.pow(Math.abs((((lon - lonC + 540) % 360) - 180) / lonH), n) + Math.pow(Math.abs((lat - latC) / latH), n) <= 1;
+    const pts: [number, number, number][] = [];
+    let maxZ = -1;
     for (let i = 0; i < N; i++) {
       const a = (2 * Math.PI * i) / N, c = Math.cos(a), s = Math.sin(a);
-      const lon = lonC + lonH * Math.sign(c) * Math.pow(Math.abs(c), 2 / n);
-      const lat = latC + latH * Math.sign(s) * Math.pow(Math.abs(s), 2 / n);
-      let [x, y, z] = proj(lat, lon);
-      if (z > maxZ) maxZ = z;
-      if (z < 0) { const l = Math.hypot(x, y) || 1; x /= l; y /= l; }
-      d += (i ? "L" : "M") + f3(x) + " " + f3(y);
+      const q = proj(latC + latH * Math.sign(s) * Math.pow(Math.abs(s), 2 / n), lonC + lonH * Math.sign(c) * Math.pow(Math.abs(c), 2 / n));
+      if (q[2] > maxZ) maxZ = q[2];
+      pts.push(q);
     }
-    return { d: d + "Z", vis: clamp01((maxZ + 0.02) / 0.12) };
+    const start = pts.findIndex((q) => q[2] >= 0);
+    if (start < 0) return { d: "M0 0Z", vis: 0 };
+    const out: [number, number][] = [];
+    let exit = 0;
+    for (let k = 0; k < N; k++) {
+      const a = pts[(start + k) % N]!, b = pts[(start + k + 1) % N]!;
+      if (a[2] >= 0) out.push([a[0], a[1]]);
+      if (a[2] >= 0 === b[2] >= 0) continue;
+      const t = a[2] / (a[2] - b[2]);
+      const ang = Math.atan2(a[1] + (b[1] - a[1]) * t, a[0] + (b[0] - a[0]) * t);
+      if (a[2] >= 0) {
+        exit = ang;
+        out.push([Math.cos(ang), Math.sin(ang)]);
+        continue;
+      }
+      // Back in front: walk the outline from where it left, the way that runs inside the patch.
+      const ccw = (((ang - exit) % TAU) + TAU) % TAU;
+      const cw = ccw - TAU;
+      const delta = inside(...outlineToLatLon(exit + ccw / 2)) ? ccw : inside(...outlineToLatLon(exit + cw / 2)) ? cw : Math.abs(ccw) < Math.abs(cw) ? ccw : cw;
+      const steps = Math.max(1, Math.ceil(Math.abs(delta) / 0.1));
+      for (let m = 1; m <= steps; m++) out.push([Math.cos(exit + (delta * m) / steps), Math.sin(exit + (delta * m) / steps)]);
+    }
+    return { d: out.map(([x, y], i) => (i ? "L" : "M") + f3(x) + " " + f3(y)).join("") + "Z", vis: clamp01((maxZ + 0.02) / 0.12) };
   };
   // Affine frame of a flat sprite lying on the sphere at (lat, lon).
   const frame = (lat: number, lon: number, sc: number) => {
