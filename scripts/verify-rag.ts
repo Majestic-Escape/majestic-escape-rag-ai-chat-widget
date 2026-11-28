@@ -17,7 +17,7 @@ import { FIXED, draftOf, searchReply, validateReply, type Reply } from "../src/l
 import { inquire } from "../src/lib/rag/inquire";
 import { applyGuards, negatedAmenities, writtenDates } from "../src/lib/rag/guards";
 import { quickRead } from "../src/lib/rag/quick";
-import { inCanary, pipelineMode } from "../src/lib/rag/runtime";
+import { canaryPercent, chatIdentity, inCanary, pilotLive, pipelineMode } from "../src/lib/rag/runtime";
 
 let failures = 0;
 let passes = 0;
@@ -582,7 +582,7 @@ async function main(): Promise<void> {
     });
     let r = await w.say("villas in goa for 8");
     check("turn 1: confirmed matches only", [r.outcome, ids(r).sort()], ["matches", villas8.slice(0, 8).map((l) => l._id).sort()]);
-    check("turn 1: every card is a villa that sleeps 8+", r.cards.every((c) => c.propertyType === "villa" && c.guests >= 8), true);
+    check("turn 1: every card is a villa that sleeps 8+", r.cards.every((c) => c.propertyType === "villa" && (c.guests ?? 0) >= 8), true);
     check("turn 1: the filters are shown back first", r.text.split("\n")[0], "Goa · 8 guests · villa");
     check("turn 1: no dates → no availability claim", [r.cards.some((c) => c.availability), /Add your dates/.test(r.text)], [false, true]);
     check("turn 1: only place and dates went to the API", w.calls.catalog, ["?location=goa&limit=50&page=1"]);
@@ -1917,6 +1917,157 @@ async function main(): Promise<void> {
     // the chain only ever holds what was configured
     check("chain parsing keeps order and drops entries without a key", parseChain("groq:qwen/q, gemini:g-lite ,groq:openai/gpt-oss-120b", { groq: "k" }).map(providerId), ["groq:qwen/q", "groq:openai/gpt-oss-120b"]);
     check("an unknown provider kind is ignored — nothing else is ever called", parseChain("openai:gpt-9,groq:qwen/q", { groq: "k", gemini: "k" }).map(providerId), ["groq:qwen/q"]);
+  });
+
+  await group("post-release-dates-off", async () => {
+    // Post-release review 2026-11-28: with dated search off, no path may keep dates in the search state,
+    // including the retry after another instance moved the state, and a confirmed change.
+    const saved = (name: string) => JSON.parse(readFileSync(`eval/contract/${name}.json`, "utf8")) as { status: number; body: { data: Listing[] } };
+    const key = "g:g_77777777-review";
+    const DATES = { checkIn: "2026-12-20", checkOut: "2026-12-23" };
+    const hasDates = (s: SearchState | undefined) => !!s && ("checkIn" in s || "checkOut" in s || "nights" in s);
+    const make = (racer?: (s: SearchState) => SearchState) => {
+      const inner = memoryStore();
+      let raced = !racer;
+      const store: StateStore = {
+        load: (k) => inner.load(k),
+        commit: async (k, rev, next) => {
+          if (!raced) { raced = true; const d = await inner.load(k); await inner.commit(k, d?.rev ?? 0, { state: racer!(d?.state ?? {}), pending: null, updatedAt: Date.parse("2026-11-25T06:00:00Z") }); }
+          return inner.commit(k, rev, next);
+        },
+      };
+      const urls: string[] = [];
+      const deps: PipelineDeps = {
+        now: () => new Date("2026-11-25T06:00:00Z"),
+        store,
+        catalog: { baseUrl: "https://api.example/api/v1", fetch: (async (u: string | URL) => { urls.push(String(u)); return Response.json(saved("place-goa").body, { status: 200 }); }) as typeof fetch },
+        llm: async () => ({ ok: false, why: "failed", attempts: 0, errors: ["no model in this check"] }),
+      };
+      return { inner, deps, urls };
+    };
+    const turn = (deps: PipelineDeps, extra: Partial<Parameters<typeof handleTurn>[0]>) =>
+      handleTurn({ message: "Set filters", key, readMode: "off", dated: false, ...extra }, deps, new AbortController().signal);
+
+    {
+      // the op itself carries dates; another instance commits between this turn's read and its write
+      const w = make((s) => ({ ...s, guests: { min: 4 } }));
+      const r = await turn(w.deps, { op: { set: { place: "goa", ...DATES } as never } });
+      const stored = w.inner.docs.get(key)?.state;
+      check("conflict retry, dates in the op: retry reply, the other change kept, no dates stored or returned",
+        [r.outcome, stored?.guests, hasDates(stored), hasDates(r.state)], ["retry", { min: 4 }, false, false]);
+    }
+    {
+      // the newer state written by the other instance carries dates (an older bundle / a flip of RAG_DATED_SEARCH)
+      const w = make((s) => ({ ...s, place: "goa", ...DATES }));
+      const r = await turn(w.deps, { op: { set: { guests: { min: 2 } } } });
+      const stored = w.inner.docs.get(key)?.state;
+      check("conflict retry, dates in the newer state: not kept while dated search is off",
+        [r.outcome, stored?.guests, hasDates(stored), hasDates(r.state)], ["retry", { min: 2 }, false, false]);
+    }
+    {
+      // a "yes" to a stored confirm whose change has dates (written by chat mode): applied without the dates
+      const w = make();
+      const proposal = validateProposal({ intent: "search", set: { place: "goa", ...DATES } });
+      await w.inner.commit(key, 0, { state: {}, pending: { kind: "confirm", proposal: proposal as Proposal, question: "Change your search?" }, updatedAt: new Date("2026-11-25T06:00:00Z").getTime() });
+      const r = await handleTurn({ message: "yes", key, readMode: "apply", dated: false }, w.deps, new AbortController().signal);
+      const stored = w.inner.docs.get(key)?.state;
+      check("confirmed change with dates, dated search off: place applied, no dates kept or sent",
+        [stored?.place, hasDates(stored), hasDates(r.state), w.urls.some((u) => /[?&](from|to)=/.test(u))], ["goa", false, false, false]);
+    }
+  });
+
+  await group("post-release-cards", async () => {
+    // Post-release review 2026-11-28: a listing with no bedrooms / guests value was drawn as "0 bedrooms".
+    const goa = JSON.parse(readFileSync("eval/contract/place-goa.json", "utf8")).body as { data: Listing[] };
+    const rows = structuredClone(goa.data).map(({ bedrooms: _b, guests: _g, ...rest }) => rest);
+    const deps: PipelineDeps = {
+      now: () => new Date("2026-11-25T06:00:00Z"),
+      store: memoryStore(),
+      catalog: { baseUrl: "https://api.example/api/v1", fetch: (async () => Response.json({ ...goa, data: rows }, { status: 200 })) as typeof fetch },
+      llm: async () => ({ ok: false, why: "failed", attempts: 0, errors: ["none"] }),
+    };
+    const r = await handleTurn({ message: "Set filters", key: "g:g_88888888-cards", readMode: "off", dated: false, op: { set: { place: "goa" } } }, deps, new AbortController().signal);
+    check("unknown guests / bedrooms are left off the card (never 0), and the final check agrees",
+      [r.cards.length > 0, r.cards.every((c) => !("bedrooms" in c) && !("guests" in c)), r.log.defects], [true, true, []]);
+  });
+
+  await group("post-release-canary", async () => {
+    // Post-release review 2026-11-28: /api/chat, /history and /config derive the caller the same way and make one
+    // canary decision, so a visitor who gets the safe reply is never offered filter controls or search state.
+    const sign = (await import("jsonwebtoken")).default.sign;
+    const env = { ...process.env };
+    process.env.JWT_SECRET = "verify-rag-only";
+    const hdr = (token?: string, xff?: string) => new Headers({ ...(token ? { authorization: `Bearer ${token}` } : {}), ...(xff ? { "x-forwarded-for": xff } : {}) });
+    const uid = "65a1b2c3d4e5f6a7b8c9d0e1";
+    const good = sign({ userId: uid }, "verify-rag-only");
+    const forged = sign({ userId: uid }, "someone-else");
+    const shortId = sign({ userId: "aaaaaaaaaaaa" }, "verify-rag-only"); // a 12-character ObjectId-able string
+    check("signed-in: the account key, the guest id ignored", chatIdentity(hdr(good), "g_12345678-abcd").key, `u:${uid}`);
+    const f = chatIdentity(hdr(forged), "g_12345678-abcd");
+    check("a token that does not verify: a guest of its own, never the plain guest thread", [f.userId, f.guestId === guestIdForUnverifiedToken("g_12345678-abcd", forged), f.key?.startsWith("g:g_12345678-abcd-t")], [null, true, true]);
+    check("a verified token whose id is not a 24-hex ObjectId is anonymous (history used to read it as an account)", chatIdentity(hdr(shortId), "g_12345678-abcd").userId, null);
+    check("a guest id over 100 characters is no identity", chatIdentity(hdr(), "g_" + "a".repeat(99)).guestId, null);
+    check("no identity: the canary falls back to the address", chatIdentity(hdr(undefined, "203.0.113.9"), undefined), { userId: null, guestId: null, key: null, ip: "203.0.113.9" });
+    process.env.RAG_PIPELINE = "v2";
+    const g = chatIdentity(hdr(), "g_12345678-abcd");
+    process.env.RAG_V2_PERCENT = "0";
+    check("canary 0 %: nobody gets the pilot", [pilotLive(g), canaryPercent()], [false, 0]);
+    process.env.RAG_V2_PERCENT = "10%";
+    check("unreadable percent: nobody (never everyone)", [pilotLive(g), canaryPercent()], [false, 0]);
+    delete process.env.RAG_V2_PERCENT;
+    check("percent unset: everyone", [pilotLive(g), canaryPercent()], [true, 100]);
+    process.env.RAG_PIPELINE = "shadow";
+    check("shadow: the pilot answers nobody", pilotLive(g), false);
+    process.env = env;
+  });
+
+  await group("post-release-store-deadline", async () => {
+    // Post-release review 2026-11-28: a stalled database held a filter button 10-25 s (staging drill), past the turn's
+    // 9 s deadline. Every state call now waits 2.5 s at most, and once per turn.
+    const goa = JSON.parse(readFileSync("eval/contract/place-goa.json", "utf8")).body;
+    const hang = () => new Promise<never>(() => {});
+    const timed = async <T,>(p: Promise<T>, capMs: number) => {
+      const t0 = performance.now();
+      const out = await Promise.race([p, new Promise<"hung">((r) => setTimeout(() => r("hung"), capMs))]);
+      return { out, ms: Math.round(performance.now() - t0) };
+    };
+    const deps = (store: StateStore): PipelineDeps => ({
+      now: () => new Date("2026-11-25T06:00:00Z"),
+      store,
+      catalog: { baseUrl: "https://api.example/api/v1", fetch: (async () => Response.json(goa, { status: 200 })) as typeof fetch },
+      llm: async () => ({ ok: false, why: "failed", attempts: 0, errors: ["no model in this check"] }),
+    });
+    const turn = (store: StateStore, signal: AbortSignal) =>
+      handleTurn({ message: "Set filters", key: "g:g_88888888-review", readMode: "off", dated: false, op: { set: { place: "goa" } } }, deps(store), signal);
+
+    {
+      const r = await timed(turn({ load: hang, commit: hang }, new AbortController().signal), 6000);
+      check("state read never answers: the turn ends by itself in about 2.5 s, nothing searched or promised",
+        [r.out === "hung" ? "hung" : r.out.outcome, r.ms >= 2400 && r.ms < 3000], ["not_processed", true]);
+    }
+    {
+      // without the latch the failed write retried like a version conflict: a second read and a third write
+      const inner = memoryStore();
+      let calls = 0;
+      const r = await timed(turn({ load: (k) => { calls++; return inner.load(k); }, commit: () => { calls++; return hang(); } }, new AbortController().signal), 12000);
+      check("state write never answers: one 2.5 s wait, then the retry reply (no match claimed); the store is not asked again",
+        [r.out === "hung" ? "hung" : r.out.outcome, r.ms >= 2400 && r.ms < 3000, calls, inner.docs.size], ["retry", true, 2, 0]);
+    }
+    {
+      // the bound is time only: a customer who leaves mid-search still has what they asked kept
+      const inner = memoryStore();
+      const gone = new AbortController();
+      const leaving: PipelineDeps = { ...deps(inner), catalog: { baseUrl: "https://api.example/api/v1", fetch: (async () => { gone.abort(); throw new DOMException("aborted", "AbortError"); }) as typeof fetch } };
+      const r = await handleTurn({ message: "Set filters", key: "g:g_88888888-left", readMode: "off", dated: false, op: { set: { place: "goa" } } }, leaving, gone.signal);
+      check("customer leaves mid-search: no cards, and the change is still stored",
+        [r.outcome, r.cards.length, inner.docs.get("g:g_88888888-left")?.state.place], ["unavailable", 0, "goa"]);
+    }
+    {
+      const cfg: LlmConfig = { chain: [{ kind: "groq", model: "m", key: "k" }], health: newHealth(), fetch: (async () => Response.json({})) as typeof fetch, reserve: hang };
+      const r = await timed(proposeJson("s", "u", cfg, AbortSignal.timeout(800)), 6000);
+      check("daily-cap counter never answers: no model call, the turn ends at its deadline",
+        [r.out === "hung" ? "hung" : r.out.ok, r.ms < 1300], [false, true]);
+    }
   });
 
   console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILED`} — ${passes} checks passed`);

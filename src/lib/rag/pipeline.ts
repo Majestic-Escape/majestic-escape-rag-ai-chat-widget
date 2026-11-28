@@ -17,6 +17,7 @@ import type { LlmResult } from "./llm";
 import { quickRead } from "./quick";
 import { decide, type Decision } from "./requirements";
 import { FIXED, clarifyReply, confirmQuestion, draftOf, draftText, filterChips, policyReply, searchReply, validateReply, type Outcome, type Reply } from "./reply";
+import { bounded } from "../bounded";
 import { isExpired, type Pending, type StateDoc, type StateStore } from "./state";
 import type { SearchState } from "./types";
 import {
@@ -114,10 +115,21 @@ export async function handleTurn(input: TurnInput, deps: PipelineDeps, signal: A
     return asked.get(k)!;
   };
 
+  // Every state call waits DB_WAIT_MS at most, and after one failed call the rest of this turn does not wait on
+  // the store again (a failed write would otherwise retry like a version conflict: two more waits). Time only, not
+  // the turn's signal: a customer who leaves mid-turn still has what they asked kept.
+  let storeDown: unknown = null;
+  const guarded = <T,>(call: () => Promise<T>): Promise<T> =>
+    storeDown ? Promise.reject(storeDown) : bounded(call()).catch((err: unknown) => { storeDown = err ?? new Error("state store failed"); throw err; });
+  const store: StateStore = {
+    load: (k) => guarded(() => deps.store.load(k)),
+    commit: (k, r, next) => guarded(() => deps.store.commit(k, r, next)),
+  };
+
   // ── load ──
   let doc: StateDoc | null = null;
   try {
-    doc = input.key ? await deps.store.load(input.key) : null;
+    doc = input.key ? await store.load(input.key) : null;
   } catch {
     // Not knowing what the customer asked so far is not the same as "nothing": do
     // not search, and do not spend a model call, on a state we could not read.
@@ -141,7 +153,7 @@ export async function handleTurn(input: TurnInput, deps: PipelineDeps, signal: A
     current = next;
     if (!input.key) return true;
     try {
-      const ok = await deps.store.commit(input.key, rev, { state: next, pending: nextPending, updatedAt: deps.now().getTime() });
+      const ok = await store.commit(input.key, rev, { state: next, pending: nextPending, updatedAt: deps.now().getTime() });
       if (ok) rev++;
       log.rev = rev;
       return ok;
@@ -159,7 +171,7 @@ export async function handleTurn(input: TurnInput, deps: PipelineDeps, signal: A
   if (fast?.kind === "thanks") return finish(fixed("thanks", FIXED.thanks, pending));
   if (fast?.kind === "reset") {
     if (!(await commit({}, null)) && input.key) {
-      rev = (await deps.store.load(input.key).catch(() => null))?.rev ?? 0;
+      rev = (await store.load(input.key).catch(() => null))?.rev ?? 0;
       if (!(await commit({}, null))) return finish(fixed("not_processed", FIXED.not_processed));
     }
     return finish(fixed("reset", FIXED.reset));
@@ -185,7 +197,7 @@ export async function handleTurn(input: TurnInput, deps: PipelineDeps, signal: A
       return finish(fixed("declined", FIXED.kept));
     }
     proposal = pending.proposal;
-    state = applyDelta(state, proposal);
+    state = undated(applyDelta(state, proposal));
     log.intent = "search";
   } else if (fast?.kind === "consent" && pending?.kind === "consent") {
     if (!fast.yes) {
@@ -311,7 +323,7 @@ export async function handleTurn(input: TurnInput, deps: PipelineDeps, signal: A
       log.why = judged.doubt ? "removal_unnamed" : problem;
       // A doubt about how to read the change: one focused question showing the search it would give.
       // Nothing is applied until the customer says yes; the current search stays as it is.
-      const question = CONFIRMABLE.has(problem) ? confirmQuestion(state, applyDelta(state, proposal), today) : null;
+      const question = CONFIRMABLE.has(problem) ? confirmQuestion(state, undated(applyDelta(state, proposal)), today) : null;
       if (question) {
         await commit(state, { kind: "confirm", proposal, question });
         return finish(fixed("clarify", question, null));
@@ -358,10 +370,10 @@ export async function handleTurn(input: TurnInput, deps: PipelineDeps, signal: A
   if (!reply.cards.length) delete next.shownIds;
   if (!(await commit(next, reply.pending))) {
     // Another instance moved the state. Re-apply this turn's change to the newer state, once.
-    const fresh = input.key ? await deps.store.load(input.key).catch(() => null) : null;
+    const fresh = input.key ? await store.load(input.key).catch(() => null) : null;
     rev = fresh?.rev ?? 0;
     const base = fresh && !isExpired(fresh, started) ? revalidate(fresh.state, today).state : {};
-    const merged: SearchState = proposal ? applyDelta(base, proposal) : { ...base, consentFor: state.consentFor };
+    const merged: SearchState = undated(proposal ? applyDelta(base, proposal) : { ...base, consentFor: state.consentFor });
     await commit(merged, null);
     // The reply above was built on the older state: ask for a resend rather than show it.
     return finish(fixed("retry", FIXED.retry));

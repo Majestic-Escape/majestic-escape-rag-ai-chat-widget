@@ -28,6 +28,7 @@
 
 import { ObjectId } from "mongodb";
 import clientPromise from "./mongodb";
+import { bounded } from "./bounded";
 
 const SETTINGS_COLLECTION = "settings";
 const AI_CHAT_SETTING_ID = "ai-chat";
@@ -59,11 +60,10 @@ export type AiToggleReader = () => Promise<boolean | null>;
 let cache: { enabled: boolean; expires: number } | null = null;
 
 async function readFromDb(): Promise<boolean | null> {
-  const client = await clientPromise;
-  const doc = await client
-    .db()
-    .collection<AiChatSettingDoc>(SETTINGS_COLLECTION)
-    .findOne({ _id: AI_CHAT_SETTING_ID }, { projection: { enabled: 1 } });
+  // Bounded, the connection included: a stalled database fails closed in 2.5 s instead of holding the request 10 s.
+  const read = async () =>
+    (await clientPromise).db().collection<AiChatSettingDoc>(SETTINGS_COLLECTION).findOne({ _id: AI_CHAT_SETTING_ID }, { projection: { enabled: 1 } });
+  const doc = await bounded(read());
 
   if (!doc) return null;
   if (typeof doc.enabled !== "boolean") {

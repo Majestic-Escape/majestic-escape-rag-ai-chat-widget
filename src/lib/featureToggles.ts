@@ -27,6 +27,7 @@
 
 import { ObjectId } from "mongodb";
 import clientPromise, { appDbName } from "./mongodb";
+import { bounded } from "./bounded";
 
 export type FeatureId = "support" | "messaging";
 export const FEATURE_IDS: readonly FeatureId[] = ["support", "messaging"];
@@ -67,11 +68,10 @@ const writes = new Map<FeatureId, number>();
 let loggedDb = false;
 
 async function readFromDb(id: FeatureId): Promise<boolean | null> {
-  const client = await clientPromise;
-  const doc = await client
-    .db(appDbName())
-    .collection<FeatureSettingDoc>(SETTINGS_COLLECTION)
-    .findOne({ _id: DOC_ID[id] }, { projection: { enabled: 1 } });
+  // Bounded, the connection included: a stalled database fails open in 2.5 s instead of holding the request 10 s.
+  const read = async () =>
+    (await clientPromise).db(appDbName()).collection<FeatureSettingDoc>(SETTINGS_COLLECTION).findOne({ _id: DOC_ID[id] }, { projection: { enabled: 1 } });
+  const doc = await bounded(read());
   if (!loggedDb) {
     // Once per process: which database the switches are written to. majestic-chat
     // must read the SAME one (its MAIN_DB_NAME) or admin flips are never seen there.

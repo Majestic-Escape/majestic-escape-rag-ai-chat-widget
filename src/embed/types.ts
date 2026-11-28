@@ -7,8 +7,9 @@ export interface PropertyCardData {
   averageRating: number;
   reviewCount: number;
   photos: string[];
-  guests: number;
-  bedrooms: number;
+  /** absent when the listing has no value */
+  guests?: number;
+  bedrooms?: number;
   /** Which kind of result this card is. One reply never mixes groups. */
   group?: "match" | "possible" | "alternative";
   /** Why a card is not a plain match: "9 km from Panaji", "not verified: private pool". */

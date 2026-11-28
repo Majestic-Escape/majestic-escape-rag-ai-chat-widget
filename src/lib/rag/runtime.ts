@@ -3,11 +3,14 @@
 // not expose user env vars at build time, and module-scope reads break the
 // precompiled server bundle's load order).
 
+import { ObjectId } from "mongodb";
 import clientPromise, { appDbName } from "../mongodb";
+import { verifyToken } from "../jwt";
+import { ipFromHeaders } from "../rateLimit";
 import { istToday } from "./dates";
 import { envKeys, parseChain, proposeJson, routeChain } from "./llm";
 import type { PipelineDeps } from "./pipeline";
-import { mongoStore } from "./state";
+import { guestIdForUnverifiedToken, mongoStore, stateKey } from "./state";
 
 export type PipelineMode = "safe" | "shadow" | "v2";
 
@@ -28,16 +31,40 @@ export const aiDraftEnabled = (): boolean => process.env.RAG_AI_DRAFT === "on";
 /** Dates are sent to the site's search only when switched on (off until the A9 search-vs-booking fix is live). */
 export const datedSearchEnabled = (): boolean => process.env.RAG_DATED_SEARCH === "on";
 
-/** Share of identities that get `v2` when the mode is `v2` (canary). Stable per identity. */
-export function inCanary(identity: string): boolean {
+/** RAG_V2_PERCENT as a number; unset = 100, unreadable ("10%", "ten") = 0: it must never mean everyone. */
+export function canaryPercent(): number {
   const raw = process.env.RAG_V2_PERCENT;
   const pct = raw === undefined || raw === "" ? 100 : Number(raw);
-  if (Number.isNaN(pct)) return false; // "10%" or "ten" must not mean everyone
+  return Number.isNaN(pct) ? 0 : pct;
+}
+
+/** Share of identities that get `v2` when the mode is `v2` (canary). Stable per identity. */
+export function inCanary(identity: string): boolean {
+  const pct = canaryPercent();
   if (pct >= 100) return true;
   let h = 0;
   for (let i = 0; i < identity.length; i++) h = (h * 31 + identity.charCodeAt(i)) >>> 0;
   return h % 100 < Math.max(0, pct);
 }
+
+export interface ChatIdentity { userId: string | null; guestId: string | null; key: string | null; ip: string }
+
+/** Who is asking, derived one way for /api/chat, /api/chat/history and /api/chat/config, so the three agree on
+ *  the canary and on whose search state is read. A token that does not verify gets a guest id of its own. */
+export function chatIdentity(headers: Headers, guestRaw: unknown): ChatIdentity {
+  const auth = headers.get("authorization") || "";
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : null;
+  const jwt = bearer ? verifyToken(bearer) : null;
+  const claimed = typeof jwt?.userId === "string" ? jwt.userId : typeof jwt?.id === "string" ? jwt.id : null;
+  // A signed token whose id is not an ObjectId is treated as anonymous, not as a crash.
+  const userId = claimed && ObjectId.isValid(claimed) && claimed.length === 24 ? claimed : null;
+  const guestId = !userId && typeof guestRaw === "string" && guestRaw.length <= 100 ? (bearer ? guestIdForUnverifiedToken(guestRaw, bearer) : guestRaw) : null;
+  return { userId, guestId, key: stateKey(userId, guestId), ip: ipFromHeaders(headers) };
+}
+
+/** The pilot answers this identity. Everyone else gets the safe reply, so nothing of the pilot (filter
+ *  controls, search state) may be offered to them either. */
+export const pilotLive = (id: Pick<ChatIdentity, "key" | "ip">): boolean => pipelineMode() === "v2" && inCanary(id.key ?? id.ip);
 
 export async function productionDeps(): Promise<PipelineDeps> {
   const db = (await clientPromise).db(appDbName());

@@ -107,13 +107,16 @@ export const FilterEditor: React.FC<{
   const [form, setForm] = useState<Form>(start);
   const [error, setError] = useState<string | null>(null);
 
-  // Each opening starts from the search as it is now.
-  useEffect(() => {
+  // Each opening starts from the search as it is now, at the top of the form. A layout effect, so the first frame
+  // of the slide-in already shows it: an effect painted the previous opening's values and scroll position first.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
     if (!isOpen) return;
     const f = formOf(initial);
     setStart(f);
     setForm(f);
     setError(null);
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
@@ -200,7 +203,7 @@ export const FilterEditor: React.FC<{
           </button>
         </div>
         <form onSubmit={submit} className="flex flex-col min-h-0 flex-1">
-          <div data-mc-scroll className="overflow-y-auto overscroll-contain px-4 py-3 flex flex-col gap-3">
+          <div ref={scrollRef} data-mc-scroll className="overflow-y-auto overscroll-contain px-4 py-3 flex flex-col gap-3">
             <label className="block">
               <span className={caption}>Where</span>
               <input value={form.place} onChange={(e) => set("place", e.target.value.slice(0, 80))} placeholder="City, area or stay name" autoComplete="off" className={field} />
