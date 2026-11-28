@@ -42,6 +42,12 @@ export function checkRateLimit(key: string, limit: number, windowMs: number): Ra
   return { ok: true, remaining: limit - b.count, retryAfterMs: 0 };
 }
 
+/** Gives back one call that checkRateLimit counted in the current window (a request that turned out not to need it). */
+export function releaseRateLimit(key: string): void {
+  const b = buckets.get(key);
+  if (b && b.resetAt > Date.now() && b.count > 0) b.count -= 1;
+}
+
 export function ipFromHeaders(headers: Headers): string {
   // X-Forwarded-For first IP wins; fall back to a synthetic key.
   const xff = headers.get("x-forwarded-for");

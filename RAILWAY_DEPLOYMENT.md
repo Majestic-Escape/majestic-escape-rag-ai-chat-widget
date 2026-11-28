@@ -137,8 +137,9 @@ ADMIN_USER_IDS=<comma-separated-24-char-hex-ids>
 # Add www / staging / preview hostnames as needed.
 ALLOWED_ORIGINS=https://majesticescape.in,https://www.majesticescape.in,https://admin.majesticescape.in
 
-# Cost guardrails (24h caps; see ARCHITECTURE.md §8)
-DAILY_AI_LIMIT_USER=200
+# Cost guardrails (24h caps on typed messages that reach a model; see ARCHITECTURE.md §8)
+DAILY_AI_LIMIT_USER=10
+DAILY_AI_LIMIT_GUEST=10
 DAILY_AI_LIMIT_IP=30
 
 # Where the chat widget sends users when they click a property card

@@ -77,8 +77,9 @@ ALLOWED_ORIGINS=https://user.me.coderelix.in,https://admin.me.coderelix.in
 # Where the chat sends users when they click a property card
 NEXT_PUBLIC_PROPERTY_BASE_URL=https://user.me.coderelix.in
 
-# Cost guardrails
-DAILY_AI_LIMIT_USER=200
+# Cost guardrails (typed messages that reach a model, per 24h)
+DAILY_AI_LIMIT_USER=10
+DAILY_AI_LIMIT_GUEST=10
 DAILY_AI_LIMIT_IP=30
 ```
 
@@ -200,7 +201,7 @@ In the same `majestic-rag-chatbot-server` project: **+ New** → **GitHub Repo**
 | `GROQ_API_KEY` / `XAI_API_KEY` | prod or shared keys |
 | `ALLOWED_ORIGINS` | `https://majesticescape.in,https://www.majesticescape.in,https://admin.majesticescape.in` |
 | `NEXT_PUBLIC_PROPERTY_BASE_URL` | `https://majesticescape.in` |
-| `DAILY_AI_LIMIT_USER` / `DAILY_AI_LIMIT_IP` | `200` / `30` |
+| `DAILY_AI_LIMIT_USER` / `DAILY_AI_LIMIT_GUEST` / `DAILY_AI_LIMIT_IP` | `10` / `10` / `30` (typed messages that reach a model, per 24h) |
 | `ADMIN_EMAILS` / `ADMIN_USER_IDS` | **leave blank** — DB-backed admin lookup handles this |
 
 Wait for the build to go Active. Verify with `curl https://<new-service>.up.railway.app/api/health` → `db:true, changeStream.isRunning:true`.
