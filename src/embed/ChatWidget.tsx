@@ -1041,7 +1041,7 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
             <p className="text-[12px] text-stone leading-relaxed mb-4">
               {mode === "support"
                 ? "Your support history will still be saved on the server. This only clears the visible thread."
-                : "Your AI history is saved on the server, so a reload brings it back."}
+                : "Your messages and filters will be cleared, here and the next time you open the chat."}
             </p>
             {mode === "support" && pendingCount > 0 && (
               <p className="text-[12px] font-medium text-red-600 leading-relaxed -mt-2 mb-4">
