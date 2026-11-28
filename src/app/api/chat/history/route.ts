@@ -48,10 +48,17 @@ export async function GET(req: NextRequest) {
   const db = client.db(dbName);
 
   // bounded: a stalled database answers 500 in 2.5 s; the widget then opens without history
+  const messages = db.collection("ai_chat_messages");
+  // "Start fresh" leaves a marker (POST /api/chat, reset): the conversation is only what came after the latest one.
+  const [marker] = await bounded(
+    messages.find({ ...filter, role: "reset" }, { projection: { _id: 0, createdAt: 1 } }).sort({ createdAt: -1 }).limit(1).toArray()
+  );
   const rows = await bounded(
-    db
-      .collection("ai_chat_messages")
-      .find(filter, { projection: { _id: 0, role: 1, text: 1, createdAt: 1, properties: 1 } })
+    messages
+      .find(
+        { ...filter, role: { $ne: "reset" }, ...(marker?.createdAt ? { createdAt: { $gt: marker.createdAt } } : {}) },
+        { projection: { _id: 0, role: 1, text: 1, createdAt: 1, properties: 1 } }
+      )
       .sort({ createdAt: -1 })
       .limit(limit)
       .toArray()

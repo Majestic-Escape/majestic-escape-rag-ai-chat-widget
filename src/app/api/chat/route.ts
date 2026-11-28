@@ -4,6 +4,7 @@ import clientPromise, { appDbName } from "@/lib/mongodb";
 import { validateUserMessage, looksLikeInjection, sanitizeText } from "@/lib/moderation";
 import { checkRateLimit, releaseRateLimit, withKeyLock } from "@/lib/rateLimit";
 import { isAiEnabled } from "@/lib/aiToggle";
+import { bounded } from "@/lib/bounded";
 import { handleTurn, type TurnResult } from "@/lib/rag/pipeline";
 import { AVAILABLE_NOTE, FIXED, RECHECK_NOTE, headingFor } from "@/lib/rag/reply";
 import { aiDraftEnabled, chatIdentity, datedSearchEnabled, pilotLive, pipelineMode, productionDeps, searchMode } from "@/lib/rag/runtime";
@@ -195,6 +196,18 @@ async function handle(req: NextRequest, allowance: Allowance): Promise<Response>
     const persistIdentity =
       !isReset && (userIdRaw || guestSessionId) ? { userId: userIdRaw ? new ObjectId(userIdRaw) : null, guestSessionId } : null;
     if (persistIdentity) void persistAiMessage({ ...persistIdentity, role: "user", text: cleanMessage });
+    // "Start fresh" ends the conversation for this person: a marker in the history hides everything before it
+    // on the next load (/api/chat/history; the rows stay for the record). Written before the turn and awaited,
+    // so the next message (the widget waits for this reply) is always later. A typed "new search" only resets
+    // the search and keeps the conversation.
+    if (isReset && (userIdRaw || guestSessionId)) {
+      try {
+        const db = (await clientPromise).db(appDbName());
+        await bounded(db.collection("ai_chat_messages").insertOne({ userId: userIdRaw ? new ObjectId(userIdRaw) : null, guestSessionId, role: "reset", text: "", createdAt: new Date() }));
+      } catch (err) {
+        console.warn("[chat/route] start-fresh marker not saved:", (err as Error).message);
+      }
+    }
     const saveReply = (text: string, cards: unknown[] = []) => {
       if (!persistIdentity) return;
       // By the time a saved reply is restored its availability is history: it is
