@@ -23,11 +23,11 @@ function ensureConnection(): Promise<MongoClient> {
   if (!uri) {
     return Promise.reject(new Error("[mongodb] MONGODB_URI not set"));
   }
-  // A stalled or unreachable database must fail a request inside the chat turn's 9 s deadline. With the driver
-  // defaults (30 s server selection, no socket timeout) a stall held requests 30-60 s (staging drill 2026-11-28).
-  // Every query here is short (maxTimeMS 1.5-2 s; change streams wait 1 s per getMore), so 8 s is never hit by
-  // healthy work.
-  const client = new MongoClient(uri, { serverSelectionTimeoutMS: 5000, connectTimeoutMS: 5000, socketTimeoutMS: 8000 });
+  // An unreachable database fails in 5 s instead of the driver's 30 s. No socket timeout on purpose: the listing
+  // change stream's first wait after a restart scans the oplog from its saved position (21 s measured in
+  // production), and an 8 s socket timeout killed it on every restart (2026-11-28). Customer requests are bounded
+  // per call by `bounded()` (src/lib/bounded.ts) instead.
+  const client = new MongoClient(uri, { serverSelectionTimeoutMS: 5000, connectTimeoutMS: 5000 });
   // Before `.connect()`, so the pool-creation and initial handshake connections
   // are counted rather than missed. `attachPoolMetrics` is idempotent.
   attachPoolMetrics(client);

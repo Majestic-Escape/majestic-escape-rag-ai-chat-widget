@@ -1239,6 +1239,9 @@ export const ChatWidget: React.FC = () => {
   const [aiDraft, setAiDraft] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const editorReturnRef = useRef<HTMLElement | null>(null);
+  // What phone Back closes first (see the history sentinel below): the filter sheet or the menu, then the chat.
+  const innerOpenRef = useRef(false);
+  innerOpenRef.current = editorOpen || menuOpen;
   const [dismissedDrafts, setDismissedDrafts] = useState<ReadonlySet<string>>(() => new Set());
   const {
     aiMessages,
@@ -1421,12 +1424,15 @@ export const ChatWidget: React.FC = () => {
     scrollToEnd(jump ? "auto" : "smooth");
   }, [messages, isLoading, effectiveMode, scrollToEnd]);
 
-  // Close the menu when the entire chat panel closes — otherwise reopening
-  // the chat would surface yesterday's open menu. Once the panel has faded
-  // out, so the drawer doesn't slide away on a closing panel.
+  // Close the menu and the filter sheet when the entire chat panel closes: otherwise reopening the chat would
+  // surface them again (the sheet came back open on its own). Once the panel has faded out, so neither slides
+  // away on a closing panel.
   useEffect(() => {
     if (isOpen) return;
-    const t = setTimeout(() => setMenuOpen(false), PANEL_GONE_MS);
+    const t = setTimeout(() => {
+      setMenuOpen(false);
+      setEditorOpen(false);
+    }, PANEL_GONE_MS);
     return () => clearTimeout(t);
   }, [isOpen]);
 
@@ -1630,6 +1636,18 @@ export const ChatWidget: React.FC = () => {
       /* sandboxed context — no-op gracefully */
     }
     const onPop = () => {
+      // Back with the filter sheet or the menu open closes that and keeps the chat (re-arming the sentinel, so
+      // the next Back closes the chat). It used to close the whole chat with the sheet still open inside it.
+      if (innerOpenRef.current) {
+        setEditorOpen(false);
+        setMenuOpen(false);
+        try {
+          history.pushState(SENTINEL, "");
+          return;
+        } catch {
+          /* cannot re-arm: close the chat as before */
+        }
+      }
       sentinelLive = false;
       setIsOpen(false);
     };
