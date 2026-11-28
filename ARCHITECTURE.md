@@ -194,6 +194,9 @@ When a user types a message in the widget:
 | Every reply is "Stay search by chat is being upgraded…" | `RAG_PIPELINE` is unset or `safe` | Railway env |
 | "I couldn't process that just now" | Both model attempts failed (retired model id, timeout, bad JSON) | log line `{"t":"rag", …, "llm":{…}}`; `LLM_CHAIN` |
 | "I'm getting a lot of questions right now" | `DAILY_AI_LIMIT_GLOBAL` reached, or the `ai_usage` counter is unreadable | `ai_usage` collection |
+| Drafting: "I couldn't read that just now. Your filters are unchanged; use the filter buttons." for every typed message | Claude is resting: out of credit / spend limit (10 min), overloaded (30 s), rate-limited (retry-after), or no `ANTHROPIC_API_KEY` | log `[llm] anthropic:claude-haiku-5-5: … paused 10 min`; Anthropic Console credits; it recovers by itself on the first message after the rest |
+| Drafting: "I couldn't turn that into filters…" | The model answered valid JSON with nothing usable (`FIXED.draft_other`) | log `why: "unusable_reading"` |
+| Typed messages get "Use the filter buttons to set your search." | `RAG_AI_DRAFT` is not `on` (drafting off: the intended rollback) | Railway env |
 | "Search is temporarily unavailable" | `server.me` search returned a non-200 or an unexpected shape | `CATALOG_API_URL`; `npm run verify:rag` against a fresh `node scripts/capture-search-contract.mjs` |
 | A clarifying question after a clear message | A cross-check was too strict for that phrasing | add the message to `eval/golden/dev`, then `npm run eval:rag -- --live --only <id>` |
 | 429 immediately | Rate-limit bucket still active | [rateLimit.ts](src/lib/rateLimit.ts) — buckets reset on process restart |

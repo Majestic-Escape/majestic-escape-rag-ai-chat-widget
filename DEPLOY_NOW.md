@@ -233,6 +233,9 @@ Browser navigation to `https://chat.majesticescape.in/` returns a 307 redirect t
 | Need | Where |
 |---|---|
 | Roll back a bad deploy | Railway → **Deployments** → click any past green build → **Redeploy** |
+| Turn off AI drafting only (filters keep working) | Railway variable `RAG_AI_DRAFT=off` (redeploys, ~2 min). Not the admin AI switch: that closes the filters too |
+| Drafting says "use the filter buttons" to everyone | Logs: `[llm] anthropic:claude-haiku-5-5: … paused 10 min` = Anthropic credit or spend limit; refill, and drafting resumes by itself after the pause |
+| AI spend for a day | `ai_usage` row `_id: "<India date>"`: `attempts`, `calls`, `tokensIn`, `tokensOut`, `cacheRead`, `cacheWrite` (Haiku 5.5: $0.10 / $0.50 per million; cache read 0.1x, write 1.25x of input) |
 | Live logs | Service → **Deployments** → click latest → **Logs** tab |
 | Health | `curl https://chat.me.coderelix.in/api/health` — `changeStream.isRunning: true` is the load-bearing field |
 | Re-run catch-up sync (re-embeds stale properties) | `POST /api/admin/embed-all` with admin JWT |

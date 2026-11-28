@@ -372,6 +372,7 @@ export const FIXED = {
   safe: "Stay search by chat is being upgraded. Please use the search on the site to find stays, or the Support tab to reach our team.",
   use_filters: "Use the filter buttons to set your search.",
   draft_busy: "I couldn't read that just now. Your filters are unchanged; use the filter buttons.",
+  draft_other: "I couldn't turn that into filters. Your filters are unchanged; try saying it another way or use the filter buttons.",
 } as const;
 
 const POLICY_PAGES: Record<PolicyTopic, string> = {

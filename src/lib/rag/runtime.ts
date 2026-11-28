@@ -68,7 +68,7 @@ export const pilotLive = (id: Pick<ChatIdentity, "key" | "ip">): boolean => pipe
 
 export async function productionDeps(): Promise<PipelineDeps> {
   const db = (await clientPromise).db(appDbName());
-  const usage = db.collection<{ _id: string; attempts?: number; tokensIn?: number; tokensOut?: number; createdAt?: Date }>("ai_usage");
+  const usage = db.collection<{ _id: string; attempts?: number; calls?: number; tokensIn?: number; tokensOut?: number; cacheRead?: number; cacheWrite?: number; createdAt?: Date }>("ai_usage");
   const cap = Number(process.env.DAILY_AI_LIMIT_GLOBAL ?? "3000");
 
   // The daily cap lives in the database so a restart or a second instance
@@ -85,9 +85,11 @@ export async function productionDeps(): Promise<PipelineDeps> {
       return false;
     }
   };
-  const record = (u: { tokensIn: number; tokensOut: number }) => {
+  // One row a day: attempts (reserved before each call, failures included), calls (answered), and the tokens billed.
+  // tokensIn includes the cached part: cacheRead is billed at 0.1x the input price and cacheWrite at 1.25x on Claude.
+  const record = (u: { tokensIn: number; tokensOut: number; cacheRead: number; cacheWrite: number }) => {
     void usage
-      .updateOne({ _id: istToday(new Date()) }, { $inc: { tokensIn: u.tokensIn, tokensOut: u.tokensOut } })
+      .updateOne({ _id: istToday(new Date()) }, { $inc: { calls: 1, tokensIn: u.tokensIn, tokensOut: u.tokensOut, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite } })
       .catch(() => {});
   };
 

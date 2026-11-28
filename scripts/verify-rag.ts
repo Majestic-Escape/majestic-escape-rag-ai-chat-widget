@@ -10,9 +10,10 @@ import { fetchCandidates, parsePage, scopeOf, searchUrl } from "../src/lib/rag/c
 import { readFileSync } from "node:fs";
 import { hasDateCue, hasNegation, hasNonNightlyBudgetCue, headcount, numbersIn, redactForModel } from "../src/lib/rag/numbers";
 import { applyDelta, crossCheck, fastPath, judgeRemovals, normaliseExact, ownWords, revalidate, saidIn, stripRestated, understandInput, validateProposal, type Proposal } from "../src/lib/rag/understand";
-import { handleTurn, type PipelineDeps } from "../src/lib/rag/pipeline";
+import { handleTurn, type PipelineDeps, type TurnResult } from "../src/lib/rag/pipeline";
 import { guestIdForUnverifiedToken, memoryStore, stateKey, IDLE_MS, type StateStore } from "../src/lib/rag/state";
-import { isHindiOrHinglish, newHealth, parseChain, proposeJson, providerId, routeChain, type LlmConfig, type LlmResult, type Provider } from "../src/lib/rag/llm";
+import { failureKind, isHindiOrHinglish, newHealth, parseChain, proposeJson, providerId, routeChain, type LlmConfig, type LlmResult, type Provider } from "../src/lib/rag/llm";
+import { diffOp, draftEditPlan, formOf, mergeOps } from "../src/embed/FilterEditor";
 import { FIXED, draftOf, searchReply, validateReply, type Reply } from "../src/lib/rag/reply";
 import { inquire } from "../src/lib/rag/inquire";
 import { applyGuards, negatedAmenities, writtenDates } from "../src/lib/rag/guards";
@@ -1713,6 +1714,47 @@ async function main(): Promise<void> {
     }
   });
 
+  await group("draft-doubts", async () => {
+    // A part the checks doubt never appears as a draft line (it would be one tap from being applied); the note says why.
+    const saved = JSON.parse(readFileSync("eval/contract/place-goa.json", "utf8")) as { status: number; body: unknown };
+    const make = (script: Record<string, unknown>) => {
+      const store = memoryStore();
+      const deps: PipelineDeps = {
+        now: () => new Date("2026-11-25T06:00:00Z"),
+        store,
+        catalog: { baseUrl: "https://api.example/api/v1", fetch: (async () => Response.json(saved.body, { status: 200 })) as typeof fetch },
+        llm: async (_s, user) => ({ ok: true, json: script[JSON.parse(user).message as string], provider: "test", tokensIn: 0, tokensOut: 0, attempts: 1, ms: 0 }),
+      };
+      const key = "g:g_77777777-dddd";
+      const turn = (message: string, extra: Partial<Parameters<typeof handleTurn>[0]> = {}) =>
+        handleTurn({ message, key, readMode: "draft", dated: false, ...extra }, deps, new AbortController().signal);
+      return { turn, st: () => store.docs.get(key)?.state ?? {} };
+    };
+    const priceLines = (r: TurnResult) => (r.draft?.lines ?? []).filter((l) => (l.op.set as Record<string, unknown> | undefined)?.price !== undefined);
+    {
+      const w = make({ "4000 se zyada nahi": { intent: "search", changes: [{ do: "set", field: "price", value: { min: 4000 }, basis: "night", said: "4000 se zyada nahi" }] } });
+      await w.turn("Set filters", { op: { set: { place: "goa" } } });
+      const r = await w.turn("4000 se zyada nahi");
+      check("an inverted budget (\"not more than\" read as a floor) is left out of the draft", [r.outcome, priceLines(r).length, (r.draft?.notes ?? []).some((n) => /most you want to pay/.test(n)), w.st().price], ["draft", 0, true, undefined]);
+    }
+    {
+      const w = make({ "4000 se zyada nahi": { intent: "search", changes: [{ do: "set", field: "price", value: { max: 4000 }, basis: "night", said: "4000 se zyada nahi" }] } });
+      await w.turn("Set filters", { op: { set: { place: "goa" } } });
+      const r = await w.turn("4000 se zyada nahi");
+      check("…read the right way round, the budget is a draft line", [priceLines(r).length, (priceLines(r)[0]?.op.set as { price?: unknown })?.price], [1, { max: 4000 }]);
+    }
+    const guard = (message: string, set: Record<string, unknown>) => {
+      const p = validateProposal({ intent: "search", set });
+      if (!p || typeof p !== "object") throw new Error("proposal");
+      const g = applyGuards(message, p, {}, "2026-11-25");
+      return [g.set.amenitiesAll ?? null, g.set.amenitiesAny ?? null, g.unsupported];
+    };
+    check("heater read as AC: the AC goes, the heater stays as unsupported", guard("kitchen aur heater dono chahiye", { amenitiesAll: ["kitchen", "air-conditioning"] }), [["kitchen"], null, ["heater"]]);
+    check("…a room heater, in the customer's words", guard("must have a room heater and free parking", { amenitiesAll: ["air-conditioning", "free-parking"] }), [["free-parking"], null, ["room heater"]]);
+    check("…AC named as well: kept", guard("AC aur heater dono chahiye", { amenitiesAll: ["air-conditioning"] }), [["air-conditioning"], null, []]);
+    check("…no heater wanted: the AC goes, nothing is added", guard("heater nahi chahiye", { amenitiesAll: ["air-conditioning"] }), [null, null, []]);
+  });
+
   await group("draft-apply-equivalence", async () => {
     // Property: applying every line of a draft (as the Apply button does: merged ops, model-free path) gives exactly
     // the search the reading itself gives. The draft card never shows one change and applies another.
@@ -2067,6 +2109,130 @@ async function main(): Promise<void> {
       const r = await timed(proposeJson("s", "u", cfg, AbortSignal.timeout(800)), 6000);
       check("daily-cap counter never answers: no model call, the turn ends at its deadline",
         [r.out === "hung" ? "hung" : r.out.ok, r.ms < 1300], [false, true]);
+    }
+  });
+
+  await group("haiku-drafting", async () => {
+    // Haiku 5.5 as the only drafting model (2026-11-28). The fake API answers in the documented shapes (claude-api
+    // skill, shared/error-codes.md; @anthropic-ai/sdk 1.14 error fields); a real out-of-credit answer can't be
+    // produced without draining the account.
+    check("402 billing_error is billing", failureKind(402, "billing_error"), "billing");
+    check("429 with error_code enforced_spend_limit_reached is billing, not a rate limit", failureKind(429, "rate_limit_error", "enforced_spend_limit_reached"), "billing");
+    check("402 with a linked-org spend limit is billing", failureKind(402, null, "linked_organization_spend_limit_reached"), "billing");
+    check("the older 400 'credit balance is too low' is billing", failureKind(400, "invalid_request_error", null, "Your credit balance is too low to access the Anthropic API."), "billing");
+    check("529 is overloaded; 422 is the request's own answer; 500 and a plain 429 are other",
+      [failureKind(529, "overloaded_error"), failureKind(422), failureKind(500, "api_error"), failureKind(429, "rate_limit_error")], ["overloaded", "content", "other", "other"]);
+
+    const HAIKU: Provider = { kind: "anthropic", model: "claude-haiku-5-5", key: "k" };
+    type Reply = () => Response;
+    const ok = (text = '{"intent":"search"}', cacheRead = 2034, cacheWrite = 0): Reply => () => Response.json({
+      id: "msg_x", type: "message", role: "assistant", model: "claude-haiku-5-5", content: [{ type: "text", text }], stop_reason: "end_turn", stop_sequence: null,
+      usage: { input_tokens: 136, output_tokens: 120, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite },
+    });
+    const refusal: Reply = () => Response.json({ id: "msg_r", type: "message", role: "assistant", model: "claude-haiku-5-5", content: [], stop_reason: "refusal", stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } });
+    const err = (status: number, type: string, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}): Reply => () =>
+      Response.json({ type: "error", error: { type, message: `${type} (test)`, ...extra } }, { status, headers });
+    const world = (script: Reply[]) => {
+      let clock = 5_000_000, calls = 0, reserved = 0;
+      const recorded: unknown[] = [];
+      const cfg: LlmConfig = {
+        chain: [HAIKU], health: newHealth(), now: () => clock,
+        fetch: (async () => { const r = script[Math.min(calls, script.length - 1)]!; calls++; return r(); }) as typeof fetch,
+        reserve: async () => { reserved++; return true; },
+        record: (u) => recorded.push(u),
+      };
+      return { cfg, ask: () => proposeJson("s", "u", cfg, new AbortController().signal), tick: (ms: number) => { clock += ms; }, calls: () => calls, reserved: () => reserved, recorded, open: () => (cfg.health!.openUntil.get("anthropic:claude-haiku-5-5") ?? 0) - clock };
+    };
+
+    {
+      const w = world([ok()]);
+      const r = await w.ask();
+      check("healthy: one call, the draft JSON, cache read reported and recorded for spend",
+        [r.ok, r.ok && r.cacheRead, w.calls(), w.recorded], [true, 2034, 1, [{ provider: "anthropic:claude-haiku-5-5", tokensIn: 2170, tokensOut: 120, cacheRead: 2034, cacheWrite: 0 }]]);
+    }
+    {
+      // out of credit → refilled
+      const w = world([err(402, "billing_error"), ok()]);
+      const first = await w.ask();
+      const paused = w.open();
+      const callsAfterFirst = w.calls(), reservedAfterFirst = w.reserved();
+      const during = await w.ask();
+      check("out of credit: the attempt fails, drafting pauses 10 minutes", [first.ok, !first.ok && first.why, paused], [false, "failed", 10 * 60_000]);
+      check("during the pause: answered at once, no call, nothing counted against the daily cap",
+        [!during.ok && during.why, w.calls() - callsAfterFirst, w.reserved() - reservedAfterFirst], ["unavailable", 0, 0]);
+      w.tick(10 * 60_000 + 1);
+      const after = await w.ask();
+      const again = await w.ask();
+      check("after a refill: the first message past the pause reaches Haiku and drafting is back, no restart or flag change",
+        [after.ok, again.ok, w.open() <= 0], [true, true, true]);
+    }
+    {
+      const w = world([err(429, "rate_limit_error", { details: { error_code: "enforced_spend_limit_reached" } })]);
+      await w.ask();
+      check("monthly spend cap (429, no retry-after): treated as billing, 10 minutes, not retried every minute", w.open(), 10 * 60_000);
+    }
+    {
+      const w = world([err(429, "rate_limit_error", {}, { "retry-after": "20" })]);
+      await w.ask();
+      check("rate limit: rests for the time Anthropic asks (retry-after 20 s)", w.open(), 20_000);
+    }
+    {
+      const w = world([err(529, "overloaded_error")]);
+      await w.ask();
+      check("overloaded (529): rests 30 s at once instead of after three failures", w.open(), 30_000);
+    }
+    {
+      const w = world([refusal]);
+      for (let i = 0; i < 5; i++) await w.ask();
+      check("five refusals in a row never pause drafting for everyone", [w.open() <= 0, w.calls()], [true, 5]);
+    }
+    {
+      const w = world([ok("this is not json")]);
+      for (let i = 0; i < 5; i++) await w.ask();
+      const r = await w.ask();
+      check("unusable answers never pause drafting either; each is just that message's failure", [w.open() <= 0, w.calls(), !r.ok && r.why], [true, 6, "failed"]);
+    }
+    {
+      const w = world([err(500, "api_error")]);
+      await w.ask(); await w.ask();
+      const two = w.open();
+      await w.ask();
+      check("server errors: still three in a row before a 30 s rest", [two <= 0, w.open()], [true, 30_000]);
+    }
+    {
+      // only Haiku, whatever the language: LLM_CHAIN names it and LLM_CHAIN_HINGLISH stays unset (null chain)
+      const keys = { anthropic: "a", groq: "g", gemini: "m", xai: "x" };
+      const main = parseChain("anthropic:claude-haiku-5-5", keys);
+      const picks = ["villa in goa for 4 under 10k", "goa mein villa chahiye 10k tak", "गोवा में विला चाहिए"].map((m) => routeChain(m, main, null).map(providerId));
+      check("English, Hinglish and Hindi all go to Haiku only, with other providers' keys present", picks, [["anthropic:claude-haiku-5-5"], ["anthropic:claude-haiku-5-5"], ["anthropic:claude-haiku-5-5"]]);
+      check("no Anthropic key: no chain at all (drafting answers 'use the filter buttons'), never another provider", parseChain("anthropic:claude-haiku-5-5", { groq: "g" }), []);
+    }
+
+    // Editing a draft before Apply: the form opens with the chosen lines filled in; the rest rides along.
+    {
+      const today = "2026-11-28";
+      const current: SearchState = { place: "goa", guests: { min: 4 } };
+      const next: SearchState = { place: "goa", guests: { min: 6 }, amenitiesAll: ["pool"], unsupported: ["private pool"], price: { max: 15000 } };
+      const draft = draftOf("6 log, pool, private pool, 15k tak", current, next, false, [], today);
+      const plan = draftEditPlan(current, draft.lines);
+      check("draft edit: the form shows the draft's guests, budget and pool; the current place stays",
+        [plan.form.place, plan.form.guests, plan.form.priceMax, plan.form.amenities], ["goa", "6", "15000", ["pool"]]);
+      check("draft edit: 'private pool' can't be a form field, so it rides along as written", plan.carry.map((l) => l.op), [{ unsupported: ["private pool"] }]);
+      // the guest changes guests to 5 in the editor, then saves
+      const d = diffOp(plan.start, { ...plan.form, guests: "5" });
+      const op = "error" in d ? null : mergeOps([...plan.carry.map((l) => l.op), d.op]);
+      const applied = op ? applyDelta(current, validateProposal({ intent: "search", set: op.set ?? {}, unset: op.unset, remove: op.remove, unsupported: op.unsupported, soft: op.soft, reset: op.reset === true }) as Proposal) : null;
+      check("draft edit saved: the guest's own change wins, the rest of the draft and the current search are kept",
+        applied && { place: applied.place, guests: applied.guests, price: applied.price, amenitiesAll: applied.amenitiesAll, unsupported: applied.unsupported },
+        { place: "goa", guests: { min: 5 }, price: { max: 15000 }, amenitiesAll: ["pool"], unsupported: ["private pool"] });
+      // a new search in the draft: compared against nothing, so a save keeps everything the form shows
+      const fresh = draftOf("new search: jaipur villa", current, { place: "jaipur", propertyType: "villa" }, true, [], today);
+      const p2 = draftEditPlan(current, fresh.lines);
+      const d2 = diffOp(p2.start, p2.form);
+      const op2 = "error" in d2 ? null : mergeOps([...p2.carry.map((l) => l.op), d2.op]);
+      check("draft edit of a new search: reset first, then the whole form", [op2?.reset, op2?.set?.place, op2?.set?.propertyType, op2?.set?.guests], [true, "jaipur", "villa", undefined]);
+      const none = draftEditPlan(current, []);
+      check("draft edit with every line unticked: the editor opens on the current search", [none.form, none.carry.length], [formOf(current), 0]);
     }
   });
 
