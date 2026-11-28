@@ -66,4 +66,45 @@ check("header hello starts and ends facing the visitor, smiles in between", () =
   assert.equal(helloAt(1).happy, 1);
 });
 
+// Shoelace area of an SVG path made of M/L points, in the orb's -1..1 box (the orb itself is π).
+const area = (d: string) => {
+  const p = [...d.matchAll(/[ML](-?[\d.]+) (-?[\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])] as const);
+  let a = 0;
+  for (let i = 0; i < p.length; i++) {
+    const [x1, y1] = p[i]!, [x2, y2] = p[(i + 1) % p.length]!;
+    a += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(a / 2);
+};
+
+// The bug seen on a phone: early in the spin, while the visor wrapped past the back of
+// the head, it was drawn over ~97% of the orb (a dark disc) for ~0.1 s.
+check("visor and gloss are never drawn bigger than when facing you, and never jump (every 5 ms)", () => {
+  const rest = geometry(REST);
+  const restVisor = area(rest.visor), restGloss = area(rest.gloss);
+  for (const [name, seconds, pose] of [["greeting", GREETING_SECONDS, poseAt], ["hello", HELLO_SECONDS, helloAt]] as const) {
+    let prev: number | null = null;
+    for (let t = 0; t <= seconds + 1e-9; t += 0.005) {
+      const g = geometry(pose(t));
+      const v = area(g.visor) * num(g.vis), gl = area(g.gloss) * num(g.glo) / 0.16;
+      assert.ok(v <= restVisor * 1.05, `${name} t=${t.toFixed(3)}: visor area ${v.toFixed(3)} > ${restVisor.toFixed(3)}`);
+      // The gloss sits off-centre, so it legitimately looks a little bigger when the head turns towards it.
+      assert.ok(gl <= restGloss * 1.35, `${name} t=${t.toFixed(3)}: gloss area ${gl.toFixed(3)} > ${restGloss.toFixed(3)}`);
+      if (prev !== null) assert.ok(Math.abs(v - prev) < 0.12, `${name} t=${t.toFixed(3)}: visor jumped ${prev.toFixed(3)} -> ${v.toFixed(3)}`);
+      prev = v;
+      for (const pt of g.visor.matchAll(/[ML](-?[\d.]+) (-?[\d.]+)/g)) {
+        assert.ok(Math.hypot(Number(pt[1]), Number(pt[2])) <= 1.0015, `${name} t=${t}: visor point outside the orb`);
+      }
+    }
+  }
+});
+
+check("visor follows the head turn: hidden at the back, growing smoothly to full as it comes round", () => {
+  const v = (t: number) => area(geometry(poseAt(t)).visor) * num(geometry(poseAt(t)).vis);
+  assert.equal(v(0), 0);
+  assert.ok(v(0.1) < 0.1, `t=0.1: ${v(0.1)}`);
+  assert.ok(v(0.3) > 0.5 && v(0.3) < 1, `t=0.3: ${v(0.3)}`);
+  assert.ok(Math.abs(v(1.5) - area(geometry(REST).visor)) < 0.02);
+});
+
 console.log(`\n${passed} checks passed`);
