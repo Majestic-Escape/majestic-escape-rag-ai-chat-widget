@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useCurrentPathname, useHostModalOpen, getBackendUrl, getAuthToken } from "./utils";
+import { useCurrentPathname, useHostModalOpen, getBackendUrl, getAuthToken, getOrCreateGuestId } from "./utils";
 import {
   X,
   Send,
@@ -150,10 +150,18 @@ const PropertyCardPortrait: React.FC<{
             <span className="text-[11px] text-gray-500 font-normal">/night · excl. taxes</span>
           </span>
           <div className="flex items-center gap-1 text-[12px] text-gray-500 shrink-0">
-            <Users className="w-3.5 h-3.5" aria-hidden="true" />
-            <span className="sr-only">Sleeps</span> {property.guests}<span className="sr-only">, </span>
-            <BedDouble className="w-3.5 h-3.5 ml-1" aria-hidden="true" />
-            {property.bedrooms}<span className="sr-only"> bedrooms</span>
+            {typeof property.guests === "number" && (
+              <>
+                <Users className="w-3.5 h-3.5" aria-hidden="true" />
+                <span className="sr-only">Sleeps</span> {property.guests}<span className="sr-only">, </span>
+              </>
+            )}
+            {typeof property.bedrooms === "number" && (
+              <>
+                <BedDouble className="w-3.5 h-3.5 ml-1" aria-hidden="true" />
+                {property.bedrooms}<span className="sr-only"> bedrooms</span>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -1226,6 +1234,8 @@ export const ChatWidget: React.FC = () => {
   // Filters pilot (same config): the guest sets the search with buttons; a typed message is a draft to confirm
   // only when `aiDraft` is on. Advisory, like the rest of the config: the server decides what a message does.
   const [searchControls, setSearchControls] = useState(false);
+  // the sign-in token the config was read for (null = a guest)
+  const [configFor, setConfigFor] = useState<string | null>(() => getAuthToken());
   const [aiDraft, setAiDraft] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const editorReturnRef = useRef<HTMLElement | null>(null);
@@ -1439,6 +1449,7 @@ export const ChatWidget: React.FC = () => {
       setInputValue("");
     }
     identityRef.current = identity;
+    setConfigFor(getAuthToken()); // someone else signed in or out since the config was read: read it for them
   }, [isOpen, forgetSupport, forgetAi]);
 
   // AI greeting on open (Support greeting comes from server when Socket.IO joins).
@@ -1458,12 +1469,18 @@ export const ChatWidget: React.FC = () => {
   // load and the first click — normally seconds — so by the time anyone opens
   // the widget the state is already settled. One request per page load, still
   // no polling.
+  //
+  // It is read for this visitor (guest id, and token when signed in): the filter controls are offered only to a
+  // visitor the pilot answers, which the server decides per identity (canary). Read again only when the panel
+  // opens for a different signed-in person.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${getBackendUrl()}/api/chat/config`, {
+        const guest = getOrCreateGuestId();
+        const res = await fetch(`${getBackendUrl()}/api/chat/config${guest ? `?guestSessionId=${encodeURIComponent(guest)}` : ""}`, {
           cache: "no-store",
+          ...(configFor ? { headers: { Authorization: `Bearer ${configFor}` } } : {}),
         });
         if (!res.ok) {
           // Can't confirm it's on, so treat it as off. Fail closed: a missing
@@ -1487,9 +1504,9 @@ export const ChatWidget: React.FC = () => {
     return () => {
       cancelled = true;
     };
-    // Mount-only: no `isOpen` dependency, so opening and closing the panel
-    // never re-races this.
-  }, []);
+    // No `isOpen` dependency, so opening and closing the panel never re-races
+    // this; `configFor` changes only when a different person is signed in.
+  }, [configFor]);
 
   // A 403 from /api/chat means ops flipped the switch mid-session (the bundle
   // is cached up to 5 min, so an already-open tab can lag the config). Correct

@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import clientPromise from "@/lib/mongodb";
-import { verifyToken } from "@/lib/jwt";
 import { isAiEnabled } from "@/lib/aiToggle";
-import { guestIdForUnverifiedToken, isExpired, stateKey } from "@/lib/rag/state";
+import { bounded } from "@/lib/bounded";
+import { isExpired } from "@/lib/rag/state";
 import { istToday } from "@/lib/rag/dates";
 import { filterChips } from "@/lib/rag/reply";
-import { datedSearchEnabled, pipelineMode, productionDeps, searchMode } from "@/lib/rag/runtime";
+import { chatIdentity, datedSearchEnabled, pilotLive, productionDeps, searchMode } from "@/lib/rag/runtime";
 import { revalidate } from "@/lib/rag/understand";
 
 export const runtime = "nodejs";
@@ -30,27 +30,13 @@ export async function GET(req: NextRequest) {
     ? Math.max(1, Math.min(MAX_LIMIT, Math.floor(limitRaw)))
     : DEFAULT_LIMIT;
 
-  const auth = req.headers.get("authorization") || "";
-  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : null;
-  const jwt = bearer ? verifyToken(bearer) : null;
-  const userIdRaw =
-    typeof jwt?.userId === "string"
-      ? jwt.userId
-      : typeof jwt?.id === "string"
-      ? jwt.id
-      : null;
-  const guestSessionId = url.searchParams.get("guestSessionId");
-
+  // The same identity as POST /api/chat: an unverified token reads its own thread, never the plain guest one.
+  const who = chatIdentity(req.headers, url.searchParams.get("guestSessionId"));
   const filter: Record<string, unknown> = {};
-  if (userIdRaw) {
-    try {
-      filter.userId = new ObjectId(userIdRaw);
-    } catch {
-      return NextResponse.json({ error: "invalid token identity" }, { status: 401 });
-    }
-  } else if (guestSessionId && typeof guestSessionId === "string" && guestSessionId.length <= 100) {
-    // same rule as POST /api/chat: an unverified token reads its own thread, never the plain guest one
-    filter.guestSessionId = bearer ? guestIdForUnverifiedToken(guestSessionId, bearer) : guestSessionId;
+  if (who.userId) {
+    filter.userId = new ObjectId(who.userId);
+  } else if (who.guestId) {
+    filter.guestSessionId = who.guestId;
   } else {
     // No identity → no history to return.
     return NextResponse.json({ messages: [] });
@@ -61,12 +47,15 @@ export async function GET(req: NextRequest) {
   const dbName = uri.split("/").pop()?.split("?")[0] || "master-db";
   const db = client.db(dbName);
 
-  const rows = await db
-    .collection("ai_chat_messages")
-    .find(filter, { projection: { _id: 0, role: 1, text: 1, createdAt: 1, properties: 1 } })
-    .sort({ createdAt: -1 })
-    .limit(limit)
-    .toArray();
+  // bounded: a stalled database answers 500 in 2.5 s; the widget then opens without history
+  const rows = await bounded(
+    db
+      .collection("ai_chat_messages")
+      .find(filter, { projection: { _id: 0, role: 1, text: 1, createdAt: 1, properties: 1 } })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .toArray()
+  );
 
   // Return ascending so the client can render in chronological order.
   rows.reverse();
@@ -84,10 +73,10 @@ export async function GET(req: NextRequest) {
   // Filters mode: the search as it stands, so a reloaded page shows the applied filters (chips) and the editor
   // starts from them. Best effort: without it the history still loads.
   let current: { search: Record<string, unknown>; filters: unknown[] } | undefined;
-  if (pipelineMode() === "v2" && searchMode() === "filters") {
+  // Only for a visitor the pilot answers: outside the canary the chat gives the safe reply, so no filters either.
+  if (searchMode() === "filters" && pilotLive(who)) {
     try {
-      const key = stateKey(userIdRaw, (filter.guestSessionId as string | undefined) ?? null);
-      const doc = key ? await (await productionDeps()).store.load(key) : null;
+      const doc = who.key ? await bounded((await productionDeps()).store.load(who.key)) : null;
       if (doc && !isExpired(doc, Date.now())) {
         const today = istToday(new Date());
         const { shownIds: _s, consentFor: _c, ...all } = revalidate(doc.state, today).state;

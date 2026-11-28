@@ -1,14 +1,12 @@
 import { NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
 import clientPromise, { appDbName } from "@/lib/mongodb";
-import { validateUserMessage, looksLikeInjection, redactForLogs, sanitizeText } from "@/lib/moderation";
-import { checkRateLimit, ipFromHeaders, withKeyLock } from "@/lib/rateLimit";
+import { validateUserMessage, looksLikeInjection, sanitizeText } from "@/lib/moderation";
+import { checkRateLimit, withKeyLock } from "@/lib/rateLimit";
 import { isAiEnabled } from "@/lib/aiToggle";
-import { verifyToken } from "@/lib/jwt";
 import { handleTurn, type TurnResult } from "@/lib/rag/pipeline";
 import { AVAILABLE_NOTE, FIXED, RECHECK_NOTE, headingFor } from "@/lib/rag/reply";
-import { aiDraftEnabled, datedSearchEnabled, inCanary, pipelineMode, productionDeps, searchMode } from "@/lib/rag/runtime";
-import { guestIdForUnverifiedToken, stateKey } from "@/lib/rag/state";
+import { aiDraftEnabled, chatIdentity, datedSearchEnabled, pilotLive, pipelineMode, productionDeps, searchMode } from "@/lib/rag/runtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -96,13 +94,8 @@ export async function POST(req: NextRequest) {
 
     // ── Identity + rate limit (cheap rejection before body parse) ──
     // Prefer JWT identity when present so legitimate logged-in users get a higher ceiling.
-    const ip = ipFromHeaders(req.headers);
-    const authHeader = req.headers.get("authorization") || "";
-    const bearer = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : null;
-    const jwt = bearer ? verifyToken(bearer) : null;
-    const claimedId = typeof jwt?.userId === "string" ? jwt.userId : typeof jwt?.id === "string" ? jwt.id : null;
-    // A signed token whose id is not an ObjectId is treated as anonymous, not as a crash.
-    const userIdRaw = claimedId && ObjectId.isValid(claimedId) && claimedId.length === 24 ? claimedId : null;
+    // The same derivation as /api/chat/history and /api/chat/config (one canary decision for all three).
+    const { userId: userIdRaw, ip } = chatIdentity(req.headers, undefined);
 
     // Origin allow-list — cross-origin or missing-Origin callers are halved.
     const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -124,11 +117,9 @@ export async function POST(req: NextRequest) {
     } catch {
       return json(400, { error: "Invalid JSON body" });
     }
-    const { message, mode, guestSessionId: bodyGuestId } = body;
-    const guestSessionId =
-      !userIdRaw && typeof bodyGuestId === "string" && bodyGuestId.length <= 100
-        ? bearer ? guestIdForUnverifiedToken(bodyGuestId, bearer) : bodyGuestId
-        : null;
+    const { message, mode } = body;
+    const who = chatIdentity(req.headers, body.guestSessionId);
+    const guestSessionId = who.guestId;
     // A filter button (an op), "Start fresh" or a quick answer ("Yes, show them") never calls a model (the pipeline
     // ends them without one), so they are not counted against the daily limit that protects model spend; their own
     // per-minute limit protects the site's search API. Typed messages keep both limits.
@@ -164,8 +155,9 @@ export async function POST(req: NextRequest) {
 
     if (looksLikeInjection(cleanMessage)) {
       // Logged, not rejected: the model's output is only ever read as a strictly
-      // validated JSON proposal, and no model text reaches the customer.
-      console.warn(`[chat/route] possible prompt-injection attempt from ${ip}:`, redactForLogs(cleanMessage).slice(0, 200));
+      // validated JSON proposal, and no model text reaches the customer. Neither the text nor the address is
+      // logged: logs carry no customer data.
+      console.warn(`[chat/route] possible prompt-injection attempt (${cleanMessage.length} chars)`);
     }
 
     if (mode === "support") return sse(SUPPORT_RESPONSE);
@@ -195,9 +187,9 @@ export async function POST(req: NextRequest) {
 
     // ── The search pipeline (src/lib/rag) ──
     // `safe` is the default and the rollback target: no model, no claims.
-    const key = stateKey(userIdRaw, guestSessionId);
+    const key = who.key;
     const pipeline = pipelineMode();
-    const live = pipeline === "v2" && inCanary(key ?? ip);
+    const live = pilotLive(who);
     if (!live && pipeline !== "shadow") return reply(FIXED.safe);
 
     const deps = await productionDeps();

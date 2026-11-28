@@ -12,21 +12,26 @@
 // No auth: it leaks nothing beyond "is the assistant currently offered", which
 // is visible to anyone who opens the widget anyway.
 
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { isAiEnabled } from "@/lib/aiToggle";
 import { getFeatureFlags } from "@/lib/featureToggles";
-import { aiDraftEnabled, pipelineMode, searchMode } from "@/lib/rag/runtime";
+import { aiDraftEnabled, canaryPercent, chatIdentity, pilotLive, pipelineMode, searchMode } from "@/lib/rag/runtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   // supportEnabled / messagingEnabled are additive: an older widget bundle or
   // site that only reads `aiEnabled` keeps working. user.website reads
   // `messagingEnabled` from here too, so its pages and the chat service agree.
   const [aiEnabled, flags] = await Promise.all([isAiEnabled(), getFeatureFlags()]);
   // Additive: the widget offers its filter buttons from the first screen when the filters pilot is live.
-  const searchControls = pipelineMode() === "v2" && searchMode() === "filters";
+  // Only for a visitor the pilot answers (the canary), decided as /api/chat decides it. A caller that sends no
+  // identity (a bundle older than this check) gets the controls only while the canary is everyone.
+  const guest = req.nextUrl.searchParams.get("guestSessionId");
+  const identified = guest !== null || req.headers.has("authorization");
+  const live = identified ? pilotLive(chatIdentity(req.headers, guest)) : pipelineMode() === "v2" && canaryPercent() >= 100;
+  const searchControls = live && searchMode() === "filters";
   return NextResponse.json(
     { aiEnabled, supportEnabled: flags.support, messagingEnabled: flags.messaging, searchControls, aiDraft: searchControls && aiDraftEnabled() },
     // no-store so an ops flip reaches open browsers within the module's own

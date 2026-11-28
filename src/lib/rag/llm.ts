@@ -21,6 +21,7 @@
 // a test needs. Claude goes through the official SDK, given the same `fetch`.
 
 import Anthropic from "@anthropic-ai/sdk";
+import { DB_WAIT_MS, bounded } from "../bounded";
 
 const OPENAI_COMPATIBLE = {
   groq: "https://api.groq.com/openai/v1",
@@ -199,7 +200,8 @@ export async function proposeJson(system: string, user: string, cfg: LlmConfig, 
   let timed = 0; // calls that could take time: at most two
   for (const p of available) {
     if (signal.aborted || timed >= 2) break;
-    if (!(await cfg.reserve())) return { ok: false, why: "cap", attempts, errors };
+    // an unanswered counter refuses the call, like an unreadable one
+    if (!(await bounded(cfg.reserve(), DB_WAIT_MS, signal).catch(() => false))) return { ok: false, why: "cap", attempts, errors };
     attempts++;
     const id = providerId(p);
     const started = now();

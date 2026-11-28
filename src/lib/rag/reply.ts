@@ -27,8 +27,9 @@ export interface Card {
   averageRating: number;
   reviewCount: number;
   photos: string[];
-  guests: number;
-  bedrooms: number;
+  /** absent when the listing has no value: unknown is never shown as 0 */
+  guests?: number;
+  bedrooms?: number;
   /** A reply never mixes groups: every card of one reply has the same one. */
   group: "match" | "possible" | "alternative";
   note?: string;
@@ -178,8 +179,9 @@ function card(e: Evaluated, group: Card["group"], dated: boolean, note?: string)
     averageRating: l.averageRating ?? 0,
     reviewCount: l.reviewCount ?? 0,
     photos: Array.isArray(l.photos) ? l.photos.slice(0, 1) : [],
-    guests: l.guests ?? 0,
-    bedrooms: l.bedrooms ?? 0,
+    // a missing value is left out (the card then shows nothing), never drawn as 0
+    ...(typeof l.guests === "number" ? { guests: l.guests } : {}),
+    ...(typeof l.bedrooms === "number" ? { bedrooms: l.bedrooms } : {}),
     group,
     ...(note ? { note } : {}),
     ...(dated ? { availability: "available" as const } : {}),
@@ -446,7 +448,7 @@ export function validateReply(reply: Reply, ev: { state: SearchState; catalog: C
       const e = byId.get(c._id);
       if (!e) { defects.push(`card ${c._id} is not in the evidence`); continue; }
       const l = e.listing;
-      if (c.title !== l.title || c.basePrice !== l.basePrice || c.guests !== (l.guests ?? 0) || c.bedrooms !== (l.bedrooms ?? 0)) defects.push(`card ${c._id} differs from its listing`);
+      if (c.title !== l.title || c.basePrice !== l.basePrice || c.guests !== (typeof l.guests === "number" ? l.guests : undefined) || c.bedrooms !== (typeof l.bedrooms === "number" ? l.bedrooms : undefined)) defects.push(`card ${c._id} differs from its listing`);
       if (c.address.city !== (l.address?.city ?? "") || c.address.state !== (l.address?.state ?? "")) defects.push(`card ${c._id} place differs`);
       // match → confirmed only; possible → possible only; a nearby alternative may be either.
       const fits = c.group === "match" ? e.cls === "confirmed" : c.group === "possible" ? e.cls === "possible" : e.cls !== "excluded";
