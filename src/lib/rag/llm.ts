@@ -53,8 +53,8 @@ export interface LlmConfig {
   fetch: typeof fetch;
   /** Counts one attempt toward the daily cap; false = cap reached. */
   reserve: () => Promise<boolean>;
-  /** Best-effort usage accounting. */
-  record?: (u: { provider: string; tokensIn: number; tokensOut: number }) => void;
+  /** Best-effort usage accounting. tokensIn includes cacheRead and cacheWrite (billed at 0.1x and 1.25x on Claude). */
+  record?: (u: { provider: string; tokensIn: number; tokensOut: number; cacheRead: number; cacheWrite: number }) => void;
   health?: Health;
   now?: () => number;
 }
@@ -68,13 +68,31 @@ export const providerId = (p: Provider) => `${p.kind}:${p.model}`;
 
 const ATTEMPT_TIMEOUT_MS = [3500, 3000];
 const MAX_OUTPUT_TOKENS = 500;
-const COOLDOWN = { rateLimited: 60_000, flaky: 30_000, notAllowed: 10 * 60_000 };
+// billing: out of credit or over a spend limit. Nothing a retry can fix until someone pays, so the entry rests long
+// enough that guests get the filter-buttons answer at once, and short enough that a refill is picked up soon after.
+const COOLDOWN = { rateLimited: 60_000, flaky: 30_000, notAllowed: 10 * 60_000, billing: 10 * 60_000 };
 const FLAKY_AFTER = 3;
 
+/** billing: credit or spend limit. overloaded: the provider says so (529). content: this request's own answer was
+ *  unusable (a refusal); says nothing about the provider's health, so it never opens the breaker. */
+type FailureKind = "billing" | "overloaded" | "content" | "other";
+
 class ProviderError extends Error {
-  constructor(message: string, readonly status: number, readonly retryAfterMs?: number) {
+  constructor(message: string, readonly status: number, readonly retryAfterMs?: number, readonly kind: FailureKind = "other") {
     super(message);
   }
+}
+
+// Stable codes from the API's error body (error.details.error_code), never its wording.
+const SPEND_CODES = new Set(["enforced_spend_limit_reached", "contract_spend_limit_reached", "linked_organization_spend_limit_reached", "linked_organization_billing_unavailable"]);
+/** How a failed call reads: an HTTP status plus, from Claude's API, the error type and code. */
+export function failureKind(status: number, type?: string | null, code?: string | null, message?: string | null): FailureKind {
+  if (status === 402 || type === "billing_error" || (code && SPEND_CODES.has(code))) return "billing";
+  // shortcut: the older "credit balance is too low" answer was a 400 with only a message; drop when no longer seen.
+  if (status === 400 && /credit balance/i.test(message ?? "")) return "billing";
+  if (status === 529 || type === "overloaded_error") return "overloaded";
+  if (status === 422) return "content";
+  return "other";
 }
 
 /** tokensIn counts every input token; cacheRead / cacheWrite say how many of them came from / went to the prompt cache. */
@@ -95,7 +113,7 @@ async function callGemini(system: string, user: string, p: Provider, f: typeof f
     // 429 bodies carry `details[].retryDelay` like "37s".
     const body = (await res.json().catch(() => null)) as { error?: { details?: { retryDelay?: string }[] } } | null;
     const delay = body?.error?.details?.map((d) => d.retryDelay).find((d) => typeof d === "string");
-    throw new ProviderError(`gemini ${res.status}`, res.status, delay ? Math.ceil(parseFloat(delay) * 1000) : undefined);
+    throw new ProviderError(`gemini ${res.status}`, res.status, delay ? Math.ceil(parseFloat(delay) * 1000) : undefined, failureKind(res.status));
   }
   const data = (await res.json()) as {
     candidates?: { content?: { parts?: { text?: string }[] } }[];
@@ -127,7 +145,7 @@ async function callOpenAiCompatible(system: string, user: string, p: Provider, f
   });
   if (!res.ok) {
     const after = Number(res.headers.get("retry-after"));
-    throw new ProviderError(`${p.kind} ${res.status}`, res.status, Number.isFinite(after) && after > 0 ? Math.ceil(after * 1000) : undefined);
+    throw new ProviderError(`${p.kind} ${res.status}`, res.status, Number.isFinite(after) && after > 0 ? Math.ceil(after * 1000) : undefined, failureKind(res.status));
   }
   const data = (await res.json()) as {
     choices?: { message?: { content?: string } }[];
@@ -154,7 +172,7 @@ async function callAnthropic(system: string, user: string, p: Provider, f: typeo
       { signal }
     );
     // A declined request is a failure of this attempt; the next chain entry answers.
-    if (msg.stop_reason === "refusal") throw new ProviderError("anthropic refusal", 422);
+    if (msg.stop_reason === "refusal") throw new ProviderError("anthropic refusal", 422, undefined, "content");
     const text = msg.content.map((b) => (b.type === "text" ? b.text : "")).join("");
     const cacheRead = msg.usage.cache_read_input_tokens ?? 0;
     const cacheWrite = msg.usage.cache_creation_input_tokens ?? 0;
@@ -162,7 +180,8 @@ async function callAnthropic(system: string, user: string, p: Provider, f: typeo
   } catch (err) {
     if (err instanceof Anthropic.APIError && typeof err.status === "number") {
       const after = Number(err.headers?.get("retry-after"));
-      throw new ProviderError(`anthropic ${err.status}`, err.status, Number.isFinite(after) && after > 0 ? Math.ceil(after * 1000) : undefined);
+      const kind = failureKind(err.status, err.type, err.errorCode, err.apiMessage);
+      throw new ProviderError(`anthropic ${err.status}${err.errorCode ? ` ${err.errorCode}` : err.type ? ` ${err.type}` : ""}`, err.status, Number.isFinite(after) && after > 0 ? Math.ceil(after * 1000) : undefined, kind);
     }
     throw err;
   }
@@ -177,11 +196,17 @@ function parseJson(text: string): unknown {
 /** How long to stay away from an entry after this failure (0 = keep using it). */
 function cooldownFor(err: unknown, failures: number): number {
   if (err instanceof ProviderError) {
+    if (err.kind === "billing") return COOLDOWN.billing; // before 429: a spend-limit 429 has no retry-after
     if (err.status === 429) return Math.min(err.retryAfterMs ?? COOLDOWN.rateLimited, 15 * 60_000);
     if (err.status === 401 || err.status === 403 || err.status === 404) return COOLDOWN.notAllowed;
+    if (err.kind === "overloaded") return COOLDOWN.flaky;
   }
   return failures >= FLAKY_AFTER ? COOLDOWN.flaky : 0;
 }
+
+/** This request's own answer was unusable (a refusal, text that is not JSON): no sign the provider is unwell, and
+ *  counting it would let one guest's messages pause the model for everyone. */
+const isContentFailure = (err: unknown) => err instanceof SyntaxError || (err instanceof ProviderError && err.kind === "content");
 
 export async function proposeJson(system: string, user: string, cfg: LlmConfig, signal: AbortSignal): Promise<LlmResult> {
   if (cfg.chain.length === 0) return { ok: false, why: "unconfigured", attempts: 0, errors: [] };
@@ -210,16 +235,20 @@ export async function proposeJson(system: string, user: string, cfg: LlmConfig, 
       const out = await call(system, user, p, cfg.fetch, AbortSignal.any([signal, AbortSignal.timeout(ATTEMPT_TIMEOUT_MS[timed]!)]));
       const json = parseJson(out.text); // unusable output counts as a failure of this attempt
       health.failures.delete(id);
-      cfg.record?.({ provider: id, tokensIn: out.tokensIn, tokensOut: out.tokensOut });
+      cfg.record?.({ provider: id, tokensIn: out.tokensIn, tokensOut: out.tokensOut, cacheRead: out.cacheRead ?? 0, cacheWrite: out.cacheWrite ?? 0 });
       return { ok: true, json, provider: id, tokensIn: out.tokensIn, tokensOut: out.tokensOut, attempts, ms: now() - started, ...(out.cacheRead !== undefined ? { cacheRead: out.cacheRead, cacheWrite: out.cacheWrite } : {}) };
     } catch (err) {
       if (signal.aborted) break; // the customer left: not the provider's fault
-      const failures = (health.failures.get(id) ?? 0) + 1;
-      health.failures.set(id, failures);
-      const cool = cooldownFor(err, failures);
-      if (cool > 0) {
-        health.openUntil.set(id, now() + cool);
-        health.failures.delete(id);
+      if (!isContentFailure(err)) {
+        const failures = (health.failures.get(id) ?? 0) + 1;
+        health.failures.set(id, failures);
+        const cool = cooldownFor(err, failures);
+        if (cool > 0) {
+          health.openUntil.set(id, now() + cool);
+          health.failures.delete(id);
+          // the operator's signal that credit ran out: drafting answers "use the filter buttons" until the pause ends
+          if (err instanceof ProviderError && err.kind === "billing") console.warn(`[llm] ${id}: ${err.message}: paused ${Math.round(cool / 60_000)} min (check credit / spend limit)`);
+        }
       }
       if (!(err instanceof ProviderError && err.status === 429)) timed++;
       errors.push(`${id}: ${(err as Error).message}`.slice(0, 120));

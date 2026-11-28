@@ -89,6 +89,45 @@ export function diffOp(a: Form, b: Form): { op: FilterOp; changes: string[] } | 
   return { op: out, changes };
 }
 
+// Editing a draft before Apply: the lines the form can show are filled in; the rest (unverified and soft wishes,
+// any-of / none-of groups, beds, a new-search reset) ride along unchanged and are listed in the editor.
+const FORM_FIELDS = new Set(["place", "guests", "price", "bedrooms", "bathrooms", "propertyType", "placeType", "cancellation", "petsAllowed", "instantBook", "selfCheckIn", "amenitiesAll"]);
+function inForm(op: FilterOp, f: Form): boolean {
+  if (op.reset || op.unsupported?.length || op.soft?.length) return false;
+  if (Object.keys(op.set ?? {}).some((k) => !FORM_FIELDS.has(k)) || (op.unset ?? []).some((k) => !FORM_FIELDS.has(k))) return false;
+  return (op.remove ?? []).every((x) => f.amenities.includes(x)); // a must-have the form shows, not a "no x" or a wish
+}
+/** One draft line applied to the form, the way the server applies its op (each line unsets, then sets, one field). */
+function applyToForm(f: Form, op: FilterOp): Form {
+  const g: Form = { ...f, amenities: [...f.amenities] };
+  for (const k of op.unset ?? []) {
+    if (k === "price") { g.priceMin = ""; g.priceMax = ""; }
+    else if (k === "petsAllowed" || k === "instantBook" || k === "selfCheckIn") g[k] = false;
+    else if (k === "place" || k === "guests" || k === "bedrooms" || k === "bathrooms" || k === "propertyType" || k === "placeType" || k === "cancellation") g[k] = "";
+  }
+  const s = (op.set ?? {}) as Record<string, unknown>;
+  if (typeof s.place === "string") g.place = s.place;
+  for (const k of ["guests", "bedrooms", "bathrooms"] as const) if (s[k]) g[k] = n(s[k] as NumRange, "min") || n(s[k] as NumRange, "max");
+  if (s.price) { g.priceMin = n(s.price as NumRange, "min"); g.priceMax = n(s.price as NumRange, "max"); }
+  for (const k of ["propertyType", "placeType", "cancellation"] as const) if (typeof s[k] === "string") g[k] = s[k] as string;
+  for (const k of ["petsAllowed", "instantBook", "selfCheckIn"] as const) if (s[k] !== undefined) g[k] = !!s[k];
+  for (const a of (Array.isArray(s.amenitiesAll) ? s.amenitiesAll : []) as string[]) if (!g.amenities.includes(a)) g.amenities.push(a);
+  g.amenities = g.amenities.filter((a) => !(op.remove ?? []).includes(a));
+  return g;
+}
+/** What the editor opens with for a draft: the form with the chosen lines applied (`form`), the form a save is
+ *  compared with (`start`: the current search, or nothing for a new search), and the lines it carries unchanged. */
+export function draftEditPlan(current: SearchFilters, lines: Draft["lines"]): { start: Form; form: Form; carry: Draft["lines"] } {
+  const start = formOf(lines.some((l) => l.op.reset) ? {} : current);
+  let form = start;
+  const carry: Draft["lines"] = [];
+  for (const l of lines) {
+    if (inForm(l.op, form)) form = applyToForm(form, l.op);
+    else carry.push(l);
+  }
+  return { start, form, carry };
+}
+
 const field = "w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[14px] text-graphite focus:outline-none focus:border-primaryGreen focus:ring-1 focus:ring-primaryGreen";
 const caption = "block text-[12px] font-semibold text-gray-600 mb-1";
 
@@ -101,20 +140,26 @@ export const FilterEditor: React.FC<{
   onApply: (op: FilterOp, summary: string) => void;
   onReset: () => void;
   onClose: () => void;
-}> = ({ isOpen, initial, others, returnFocusRef, onApply, onReset, onClose }) => {
+  /** Opened from a draft's Edit: its chosen lines, filled into the form before the guest changes anything. */
+  draftLines?: Draft["lines"] | null;
+}> = ({ isOpen, initial, others, returnFocusRef, onApply, onReset, onClose, draftLines }) => {
   const sheetRef = useRef<HTMLDivElement | null>(null);
   const [start, setStart] = useState<Form>(() => formOf(initial));
   const [form, setForm] = useState<Form>(start);
+  const [carry, setCarry] = useState<Draft["lines"]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // Each opening starts from the search as it is now, at the top of the form. A layout effect, so the first frame
-  // of the slide-in already shows it: an effect painted the previous opening's values and scroll position first.
+  // Each opening starts from the search as it is now (with a draft's lines filled in when editing one), at the top
+  // of the form. A layout effect, so the first frame of the slide-in already shows it: an effect painted the
+  // previous opening's values and scroll position first.
   const scrollRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     if (!isOpen) return;
+    const plan = draftLines ? draftEditPlan(initial, draftLines) : null;
     const f = formOf(initial);
-    setStart(f);
-    setForm(f);
+    setStart(plan ? plan.start : f);
+    setForm(plan ? plan.form : f);
+    setCarry(plan ? plan.carry : []);
     setError(null);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -144,8 +189,10 @@ export const FilterEditor: React.FC<{
     e.preventDefault();
     const d = diffOp(start, form);
     if ("error" in d) { setError(d.error); return; }
-    if (!d.changes.length) { onClose(); return; }
-    onApply(d.op, d.changes.join(" · "));
+    // a draft's lines the form cannot show go with the guest's edits (a reset first, as mergeOps does)
+    const ops = [...carry.map((l) => l.op), ...(d.changes.length ? [d.op] : [])];
+    if (!ops.length) { onClose(); return; }
+    onApply(ops.length === 1 ? ops[0]! : mergeOps(ops), [...carry.map((l) => l.label), ...d.changes].join(" · "));
   };
   const num = (k: "guests" | "priceMin" | "priceMax" | "bedrooms" | "bathrooms", text: string, hint?: string) => (
     <label className="block">
@@ -252,6 +299,9 @@ export const FilterEditor: React.FC<{
                 </label>
               ))}
             </fieldset>
+            {carry.length > 0 && (
+              <p className="text-[12px] text-gray-600">Also from your message, applied as written: {carry.map((l) => l.label).join("; ")}.</p>
+            )}
             {others.length > 0 && (
               <p className="text-[12px] text-gray-500">Also in your search (remove them with × on their chips): {others.join(", ")}.</p>
             )}
@@ -292,7 +342,8 @@ export const DraftCard: React.FC<{
   live: boolean;
   disabled: boolean;
   onApply: (op: FilterOp, summary: string) => void;
-  onEdit: (opener: HTMLElement) => void;
+  /** Opens the filter editor with the chosen lines filled in. */
+  onEdit: (opener: HTMLElement, lines: Draft["lines"]) => void;
   onDiscard: () => void;
 }> = ({ draft, live, disabled, onApply, onEdit, onDiscard }) => {
   const [keep, setKeep] = useState<boolean[]>(() => draft.lines.map(() => true));
@@ -335,7 +386,7 @@ export const DraftCard: React.FC<{
               Apply {chosen.length === draft.lines.length ? "" : `${chosen.length} of ${draft.lines.length}`}
             </button>
           )}
-          <button type="button" aria-disabled={disabled} onClick={(e) => !disabled && onEdit(e.currentTarget)} className="rounded-full border border-primaryGreen/40 text-primaryGreen text-[12px] font-medium px-3 py-1.5 hover:bg-lightGreen/40">
+          <button type="button" aria-disabled={disabled} onClick={(e) => !disabled && onEdit(e.currentTarget, chosen)} className="rounded-full border border-primaryGreen/40 text-primaryGreen text-[12px] font-medium px-3 py-1.5 hover:bg-lightGreen/40">
             Edit filters
           </button>
           <button type="button" aria-disabled={disabled} onClick={() => !disabled && onDiscard()} className="rounded-full border border-gray-200 text-gray-600 text-[12px] font-medium px-3 py-1.5 hover:bg-gray-50">

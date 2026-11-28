@@ -30,7 +30,7 @@ import { useChat } from "./useChat";
 import { useSupportChat, RetryResult } from "./useSupportChat";
 import { ComposerField } from "./ComposerField";
 import { Mascot } from "./Mascot";
-import { Message, ChatMode, PropertyCardData, FilterChip, FilterOp, SearchFilters } from "./types";
+import { Message, ChatMode, PropertyCardData, FilterChip, FilterOp, SearchFilters, Draft } from "./types";
 import { DraftCard, FilterEditor } from "./FilterEditor";
 
 const aiQuickPrompts = [
@@ -566,7 +566,7 @@ const MessageBubble: React.FC<{
   /** Set only on the newest reply of the AI conversation. */
   chips?: { disabled: boolean; onRemove: (chip: FilterChip) => void; onClear: () => void; onEdit?: (opener: HTMLElement) => void };
   /** Filters mode: the draft's actions (live only on the newest reply) and the quick answers. */
-  draftActions?: { live: boolean; disabled: boolean; onApply: (op: FilterOp, summary: string) => void; onEdit: (opener: HTMLElement) => void; onDiscard: () => void };
+  draftActions?: { live: boolean; disabled: boolean; onApply: (op: FilterOp, summary: string) => void; onEdit: (opener: HTMLElement, lines: Draft["lines"]) => void; onDiscard: () => void };
   onQuick?: (answer: string) => void;
 }> = ({ message, onRetry, onRemove, chips, draftActions, onQuick }) => {
   const isUser = message.role === "user";
@@ -1238,6 +1238,7 @@ export const ChatWidget: React.FC = () => {
   const [configFor, setConfigFor] = useState<string | null>(() => getAuthToken());
   const [aiDraft, setAiDraft] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [editorDraft, setEditorDraft] = useState<{ msgId: string; lines: Draft["lines"] } | null>(null);
   const editorReturnRef = useRef<HTMLElement | null>(null);
   // What phone Back closes first (see the history sentinel below): the filter sheet or the menu, then the chat.
   const innerOpenRef = useRef(false);
@@ -1332,13 +1333,17 @@ export const ChatWidget: React.FC = () => {
     ...(currentSearch.amenitiesNone ?? []).map((x) => `no ${x}`),
     ...(currentSearch.soft ?? []).map((x) => `${x} (nice to have)`),
   ];
-  const openEditor = (opener: HTMLElement | null) => {
+  // `fromDraft`: the editor was opened from a draft's Edit, with its chosen lines filled in; saving it uses the draft.
+  const openEditor = (opener: HTMLElement | null, fromDraft: { msgId: string; lines: Draft["lines"] } | null = null) => {
     editorReturnRef.current = opener;
+    setEditorDraft(fromDraft);
     setEditorOpen(true);
   };
   // A button, an edit or a confirmed draft: sent as an op the server applies without a model. Focus goes to the
   // panel, not the message box, so a phone's keyboard does not pop up.
   const applyOp = (op: FilterOp, summary: string) => {
+    if (editorOpen && editorDraft) setDismissedDrafts((s) => new Set(s).add(editorDraft.msgId));
+    setEditorDraft(null);
     setEditorOpen(false);
     panelRef.current?.focus({ preventScroll: true });
     sendAi(summary, "ai", op);
@@ -2097,7 +2102,8 @@ export const ChatWidget: React.FC = () => {
             returnFocusRef={editorReturnRef}
             onApply={applyOp}
             onReset={() => applyOp({ reset: true }, "Clear all filters")}
-            onClose={() => setEditorOpen(false)}
+            onClose={() => { setEditorOpen(false); setEditorDraft(null); }}
+            draftLines={editorDraft?.lines ?? null}
           />
         )}
 
@@ -2412,7 +2418,7 @@ export const ChatWidget: React.FC = () => {
                       setDismissedDrafts((s) => new Set(s).add(msg.id));
                       applyOp(op, `Apply: ${summary}`);
                     },
-                    onEdit: (opener) => openEditor(opener),
+                    onEdit: (opener, lines) => openEditor(opener, { msgId: msg.id, lines }),
                     onDiscard: () => {
                       setDismissedDrafts((s) => new Set(s).add(msg.id));
                       panelRef.current?.focus({ preventScroll: true });

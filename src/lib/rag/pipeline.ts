@@ -254,7 +254,7 @@ export async function handleTurn(input: TurnInput, deps: PipelineDeps, signal: A
     // technical failure, so don't say "try again"; nothing is applied.
     if (parsed === null) {
       log.why = "unusable_reading";
-      return finish(fixed("other", FIXED.other, pending));
+      return finish(fixed("other", readMode === "draft" ? FIXED.draft_other : FIXED.other, pending));
     }
     if (typeof parsed === "string") return finish(fixed("clarify", clarifyReply(parsed), pending));
     proposal = prepare(parsed);

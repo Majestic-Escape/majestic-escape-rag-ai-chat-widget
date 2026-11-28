@@ -475,6 +475,8 @@ Railway → **Deployments** → click any successful past deployment → **Redep
 
 Or, in Git: `git revert <bad-commit>` → `git push origin main`. Railway picks it up.
 
+**AI drafting only (keep the filters):** set `RAG_AI_DRAFT=off` in Railway → the service redeploys (about 2 minutes). Typed messages then get "Use the filter buttons to set your search."; filters, chips and stay cards keep working with zero model calls. Do not use the admin AI switch for this: it closes the whole AI tab, filters included. To pause spending without a redeploy, removing credit or setting a spend limit in the Anthropic Console has the same effect within one typed message (drafting rests 10 minutes at a time and answers "use the filter buttons").
+
 ---
 
 ## 18. Cost ballpark
@@ -487,8 +489,9 @@ At launch volumes (a few thousand monthly active users, ~10 concurrent support c
 | MongoDB Atlas M0 (free tier) | ₹0 |
 | Gemini Developer API (free tier: 15 req/min, 1M tokens/day) | ₹0 |
 | Groq + xAI fallbacks | Pay-as-you-go (negligible if Gemini covers most) |
+| Claude Haiku 5.5 drafting (2026-11-28, prepaid, auto-reload off) | about $0.0001–0.0004 per typed message (cache hit / miss); `DAILY_AI_LIMIT_GLOBAL=1000` caps it at about $0.40 a day |
 
-Total: ~₹500/month at launch.
+Total: ~₹500/month at launch, plus Haiku drafting (staging measured $0.00006 per call with the prompt cache warm).
 
 If Gemini's free tier becomes insufficient: upgrade to a paid Gemini key, or budget ~$5/month for Groq pay-as-you-go (which has a generous free tier of its own).
 
