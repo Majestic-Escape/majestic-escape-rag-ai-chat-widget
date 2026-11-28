@@ -10,7 +10,7 @@ import { fetchCandidates, parsePage, scopeOf, searchUrl } from "../src/lib/rag/c
 import { readFileSync } from "node:fs";
 import { hasDateCue, hasNegation, hasNonNightlyBudgetCue, headcount, numbersIn, redactForModel } from "../src/lib/rag/numbers";
 import { applyDelta, crossCheck, fastPath, judgeRemovals, normaliseExact, ownWords, revalidate, saidIn, stripRestated, understandInput, validateProposal, type Proposal } from "../src/lib/rag/understand";
-import { handleTurn, type PipelineDeps } from "../src/lib/rag/pipeline";
+import { handleTurn, type PipelineDeps, type TurnResult } from "../src/lib/rag/pipeline";
 import { guestIdForUnverifiedToken, memoryStore, stateKey, IDLE_MS, type StateStore } from "../src/lib/rag/state";
 import { isHindiOrHinglish, newHealth, parseChain, proposeJson, providerId, routeChain, type LlmConfig, type LlmResult, type Provider } from "../src/lib/rag/llm";
 import { FIXED, draftOf, searchReply, validateReply, type Reply } from "../src/lib/rag/reply";
@@ -1711,6 +1711,47 @@ async function main(): Promise<void> {
       check("anthropic refusal: a failed attempt, the next entry answers", [x.out.ok && x.out.provider, x.seen], ["groq:qwen-b", ["anthropic", "groq"]]);
       check("anthropic: parsed from ANTHROPIC_API_KEY only when set", [parseChain("anthropic:claude-haiku-5-5", { anthropic: "k" }).length, parseChain("anthropic:claude-haiku-5-5", {}).length], [1, 0]);
     }
+  });
+
+  await group("draft-doubts", async () => {
+    // A part the checks doubt never appears as a draft line (it would be one tap from being applied); the note says why.
+    const saved = JSON.parse(readFileSync("eval/contract/place-goa.json", "utf8")) as { status: number; body: unknown };
+    const make = (script: Record<string, unknown>) => {
+      const store = memoryStore();
+      const deps: PipelineDeps = {
+        now: () => new Date("2026-11-25T06:00:00Z"),
+        store,
+        catalog: { baseUrl: "https://api.example/api/v1", fetch: (async () => Response.json(saved.body, { status: 200 })) as typeof fetch },
+        llm: async (_s, user) => ({ ok: true, json: script[JSON.parse(user).message as string], provider: "test", tokensIn: 0, tokensOut: 0, attempts: 1, ms: 0 }),
+      };
+      const key = "g:g_77777777-dddd";
+      const turn = (message: string, extra: Partial<Parameters<typeof handleTurn>[0]> = {}) =>
+        handleTurn({ message, key, readMode: "draft", dated: false, ...extra }, deps, new AbortController().signal);
+      return { turn, st: () => store.docs.get(key)?.state ?? {} };
+    };
+    const priceLines = (r: TurnResult) => (r.draft?.lines ?? []).filter((l) => (l.op.set as Record<string, unknown> | undefined)?.price !== undefined);
+    {
+      const w = make({ "4000 se zyada nahi": { intent: "search", changes: [{ do: "set", field: "price", value: { min: 4000 }, basis: "night", said: "4000 se zyada nahi" }] } });
+      await w.turn("Set filters", { op: { set: { place: "goa" } } });
+      const r = await w.turn("4000 se zyada nahi");
+      check("an inverted budget (\"not more than\" read as a floor) is left out of the draft", [r.outcome, priceLines(r).length, (r.draft?.notes ?? []).some((n) => /most you want to pay/.test(n)), w.st().price], ["draft", 0, true, undefined]);
+    }
+    {
+      const w = make({ "4000 se zyada nahi": { intent: "search", changes: [{ do: "set", field: "price", value: { max: 4000 }, basis: "night", said: "4000 se zyada nahi" }] } });
+      await w.turn("Set filters", { op: { set: { place: "goa" } } });
+      const r = await w.turn("4000 se zyada nahi");
+      check("…read the right way round, the budget is a draft line", [priceLines(r).length, (priceLines(r)[0]?.op.set as { price?: unknown })?.price], [1, { max: 4000 }]);
+    }
+    const guard = (message: string, set: Record<string, unknown>) => {
+      const p = validateProposal({ intent: "search", set });
+      if (!p || typeof p !== "object") throw new Error("proposal");
+      const g = applyGuards(message, p, {}, "2026-11-25");
+      return [g.set.amenitiesAll ?? null, g.set.amenitiesAny ?? null, g.unsupported];
+    };
+    check("heater read as AC: the AC goes, the heater stays as unsupported", guard("kitchen aur heater dono chahiye", { amenitiesAll: ["kitchen", "air-conditioning"] }), [["kitchen"], null, ["heater"]]);
+    check("…a room heater, in the customer's words", guard("must have a room heater and free parking", { amenitiesAll: ["air-conditioning", "free-parking"] }), [["free-parking"], null, ["room heater"]]);
+    check("…AC named as well: kept", guard("AC aur heater dono chahiye", { amenitiesAll: ["air-conditioning"] }), [["air-conditioning"], null, []]);
+    check("…no heater wanted: the AC goes, nothing is added", guard("heater nahi chahiye", { amenitiesAll: ["air-conditioning"] }), [null, null, []]);
   });
 
   await group("draft-apply-equivalence", async () => {

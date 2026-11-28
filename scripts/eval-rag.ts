@@ -49,6 +49,12 @@ const MAX_WAIT_MS = Number(opt("max-wait", "240")) * 1000;
 // --live-catalog: always ask the real search API (no cache), so turn times are end to end
 const LIVE_CATALOG = flag("live-catalog");
 const PRIMARY_ONLY = flag("primary-only");
+// --draft: filters mode with AI drafting, as production would run it (RAG_AI_DRAFT=on, dated search off). Each turn starts
+// from the EXPECTED previous search (the guest fixes a wrong draft before applying it), the typed message is read as a
+// draft, every draft line is applied the way the widget's Apply does (merged ops, model-free path), and the resulting
+// search is scored like any search turn. Dates are left out of the expected states (production does not keep them).
+// Recordings are shared with apply-mode runs; reports get a "-draft" suffix.
+const DRAFT = flag("draft");
 const HELD_OUT = SET.startsWith("heldout");
 const NOW = new Date("2026-11-25T04:30:00Z"); // 10:00 IST, Wednesday — the golden sets' "today"
 const CATALOG = (process.env.CATALOG_API_URL ?? "https://server.majesticescape.in/api/v1").replace(/\/+$/, "");
@@ -74,6 +80,7 @@ const DOWN = opt("unavailable", ""); // comma-separated models treated as out of
 const composeRecs: Record<string, Record<string, LlmResult>> = {};
 if (COMPOSE && LIVE) throw new Error("--compose is a replay of recorded answers; it cannot be combined with --live");
 const TAG = SPEC_KEY.replace(/[^A-Za-z0-9.]+/g, "-");
+const RTAG = TAG + (DRAFT ? "-draft" : "");
 // Free tiers: Groq allows ~8,000 tokens a minute per model (one call ≈ 1,500); Gemini a handful of calls a minute.
 const PACE_MS = Number(opt("pace", chain[0]?.kind === "groq" ? "12500" : "5000"));
 
@@ -286,7 +293,7 @@ async function playRun(run: string, live: boolean): Promise<RunStats> {
     let broken: TurnScore["status"] | null = null;
     for (const [i, t] of c.turns.entries()) {
       const base = { id: `${c.id}#${i + 1}`, cat: c.cat, lang: c.lang, text: t.u, expectedSearch: !t.clarify && !t.out, expectedClarify: !!t.clarify };
-      const expected: Expect = t.state ?? prevExpected;
+      const expected: Expect = DRAFT ? undatedExpect(t.state ?? prevExpected) : t.state ?? prevExpected;
       if (broken) { // an earlier turn of this conversation had no model answer: its state is unknown
         stats.scores.push({ ...base, status: broken === "unrecorded" ? "unrecorded" : "skipped", problems: [], outcome: "-", ms: 0, provider: null, violations: 0, complete: null });
         prevExpected = expected;
@@ -300,11 +307,17 @@ async function playRun(run: string, live: boolean): Promise<RunStats> {
       turnQuota = 0;
       turnRows = [];
       const t0 = performance.now();
-      const r = await handleTurn({ message: t.u, key: KEY }, deps, AbortSignal.timeout(MAX_WAIT_MS + 60_000));
+      if (DRAFT) { // teacher forcing: the guest corrected any earlier wrong draft before applying it
+        const cur = store.docs.get(KEY);
+        store.docs.set(KEY, { rev: cur?.rev ?? 0, state: expectToState(prevExpected), pending: null, updatedAt: clock });
+      }
+      const r0 = await handleTurn(DRAFT ? { message: t.u, key: KEY, readMode: "draft", dated: false } : { message: t.u, key: KEY }, deps, AbortSignal.timeout(MAX_WAIT_MS + 60_000));
+      // Apply every draft line, as the widget's Apply button does (ops merged; no model)
+      const r = DRAFT && r0.draft?.lines.length ? await handleTurn({ message: "Apply", key: KEY, op: mergeDraftOps(r0.draft.lines.map((l) => l.op as unknown as Record<string, unknown>)), dated: false }, deps, AbortSignal.timeout(30_000)) : r0;
       const e2e = Math.round(performance.now() - t0 - turnWaitMs);
       const raw = lastRaw as LlmResult | null;
       // measured end to end only when the catalogue was live and the model answer (if any) was a live call now
-      if (LIVE_CATALOG && live && (turnFresh || raw === null) && !(raw && !raw.ok)) {
+      if (!DRAFT && LIVE_CATALOG && live && (turnFresh || raw === null) && !(raw && !raw.ok)) {
         timing[base.id] = { e2e, outcome: r.outcome, search: Math.round(turnSearchMs), quota: turnQuota };
         writeFileSync(timingFile, JSON.stringify(timing));
       }
@@ -323,7 +336,14 @@ async function playRun(run: string, live: boolean): Promise<RunStats> {
       }
 
       const stateDiff = diffState(expected, got);
-      if (t.clarify) {
+      if (DRAFT && t.clarify) {
+        // Where chat mode asks a question (a non-nightly budget, impossible or past dates, a lone date), a draft applies
+        // the unambiguous parts and states the problem as a note. Wrong only if it applied the part the question is about.
+        score.problems.push(...stateDiff.filter((d) => /^(price|checkIn|checkOut|nights):/.test(d)));
+      } else if (DRAFT) {
+        // a draft is judged by the search it leaves after Apply; a non-search reply is fine when nothing changed
+        score.problems.push(...stateDiff);
+      } else if (t.clarify) {
         if (r.outcome !== "clarify") score.problems.push(`expected a clarifying question, got ${r.outcome}`);
         score.problems.push(...stateDiff.map((d) => `state changed on a clarify turn — ${d}`));
       } else if (t.out) {
@@ -480,7 +500,7 @@ async function main(): Promise<void> {
     for (const m of all) for (const id of m.failing) count.set(id, (count.get(id) ?? 0) + 1);
     const unstable = [...count].filter(([, n]) => n < all.length);
     console.log(`turns wrong in every run: ${[...count].filter(([, n]) => n === all.length).length}   wrong in some runs only (model variability): ${unstable.length}${HELD_OUT ? "" : `  ${unstable.map(([k, n]) => `${k}×${n}`).join(" ")}`}`);
-    writeFileSync(`eval/reports/${SET}-${TAG}-summary.json`, JSON.stringify(all.map((m) => (HELD_OUT ? { ...m, failing: m.failing.length } : m)), null, 1));
+    writeFileSync(`eval/reports/${SET}-${RTAG}-summary.json`, JSON.stringify(all.map((m) => (HELD_OUT ? { ...m, failing: m.failing.length } : m)), null, 1));
     return;
   }
 
@@ -495,7 +515,7 @@ async function main(): Promise<void> {
     const wrong = stats.scores.filter((x) => x.status === "wrong");
     if (wrong.length) console.log(`\nwrong turns:\n${wrong.map((x) => `  ${x.id} [${x.cat}/${x.lang}] (${x.origin}) "${x.text.slice(0, 70)}"\n      ${x.problems.join("\n      ")}`).join("\n")}`);
   }
-  writeFileSync(`eval/reports/${SET}-${TAG}-${RUN}.json`, JSON.stringify(HELD_OUT ? { ...m, failing: m.failing.length } : { ...m, wrong: stats.scores.filter((x) => x.status === "wrong").map(({ id, origin, problems, lang, cat, text, primary, provider, outcome }) => ({ id, origin, problems, lang, cat, text, primary, provider, outcome })), unanswered: stats.scores.filter((x) => x.status !== "ok" && x.status !== "wrong").map(({ id, status }) => ({ id, status })) }, null, 1));
+  writeFileSync(`eval/reports/${SET}-${RTAG}-${RUN}.json`, JSON.stringify(HELD_OUT ? { ...m, failing: m.failing.length } : { ...m, wrong: stats.scores.filter((x) => x.status === "wrong").map(({ id, origin, problems, lang, cat, text, primary, provider, outcome }) => ({ id, origin, problems, lang, cat, text, primary, provider, outcome })), unanswered: stats.scores.filter((x) => x.status !== "ok" && x.status !== "wrong").map(({ id, status }) => ({ id, status })) }, null, 1));
   const incomplete = m.providerErrors + m.unrecorded > 0;
   process.exit(incomplete ? 3 : m.correct === m.scored && m.violations === 0 ? 0 : 1);
 }
@@ -531,3 +551,25 @@ main().catch((err) => {
   console.error(err);
   process.exit(2);
 });
+
+function undatedExpect(e: Expect): Expect {
+  const { checkIn: _i, checkOut: _o, nights: _n, ...rest } = e as Expect & { checkIn?: unknown; checkOut?: unknown; nights?: unknown };
+  return rest as Expect;
+}
+
+/** The widget's Apply: the chosen draft lines' ops merged into one (same rules as FilterEditor's mergeOps). */
+function mergeDraftOps(ops: Array<Record<string, unknown>>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of ["unset", "remove", "unsupported", "soft"]) { const v = ops.flatMap((o) => (o[k] as string[] | undefined) ?? []); if (v.length) out[k] = [...new Set(v)]; }
+  const set: Record<string, unknown> = {};
+  for (const o of ops) for (const [k, v] of Object.entries((o.set as Record<string, unknown>) ?? {})) set[k] = Array.isArray(v) && Array.isArray(set[k]) ? [...new Set([...(set[k] as unknown[]), ...v])] : v;
+  if (Object.keys(set).length) out.set = set;
+  if (ops.some((o) => o.reset)) out.reset = true;
+  return out;
+}
+
+/** An expected state as the search state it stands for (a list of acceptable places → the first one). */
+function expectToState(e: Expect): SearchState {
+  const { place, ...rest } = structuredClone(e);
+  return (place === undefined ? rest : { ...rest, place: Array.isArray(place) ? place[0] : place }) as SearchState;
+}

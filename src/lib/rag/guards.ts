@@ -316,6 +316,24 @@ export function applyGuards(message: string, p: Proposal, prev: SearchState, tod
     else delete set.amenitiesAll;
     if (!unsupported.some((u) => /beach|बीच/i.test(u))) unsupported = [...unsupported, "near the beach"];
   }
+  // "heater", "room heater", "हीटर": heating, which no field holds. Read as the air-conditioning amenity (Haiku,
+  // dev + reg sets 2026-11-28, three times) it became a requirement the customer never named. When the message
+  // names no AC, the AC is taken out and the heater kept in the customer's words as unsupported.
+  const heater = message.match(HEATER);
+  const readAsAc = set.amenitiesAll?.includes("air-conditioning") || set.amenitiesAny?.includes("air-conditioning");
+  if (heater && readAsAc && !amenityMentions(message).some((m) => m.key === "air-conditioning")) {
+    for (const k of ["amenitiesAll", "amenitiesAny"] as const) {
+      if (!set[k]?.includes("air-conditioning")) continue;
+      const rest = set[k]!.filter((a) => a !== "air-conditioning");
+      if (rest.length > (k === "amenitiesAny" ? 1 : 0)) set[k] = rest;
+      else {
+        delete set[k];
+        if (k === "amenitiesAny" && rest.length) set.amenitiesAll = [...new Set([...(set.amenitiesAll ?? []), ...rest])]; // an OR group of one is a must-have
+      }
+    }
+    const clause = message.split(/[,.;!?।]|\s(?:but|lekin|par|magar|पर|लेकिन)\s/i).find((c) => HEATER.test(c)) ?? message;
+    if (!hasNegation(clause) && !unsupported.some((u) => HEATER.test(u))) unsupported = [...unsupported, heater[0].trim().toLowerCase()];
+  }
 
   // "sasta room", "cheap stay" with no amount: a wish, not a number (golden/README). A price the model wrote
   // without a typed number is dropped rather than questioned.
@@ -347,6 +365,7 @@ const CHEAP = /(?<![\p{L}\p{M}])(sasta|sasti|saste|cheap|cheaper|affordable|budg
 const PRIVATE_POOL = /(private|pvt|prvt|own|personal|apna|apni|khud ka|khudka)\s+(swimming\s+)?pool|प्राइवेट\s*पूल|निजी\s*पूल|अपना\s*पूल/i;
 const PRIVATE_WORD = /private|pvt|prvt|own|personal|apna|apni|khud|प्राइवेट|निजी|अपना/i;
 const NEAR_BEACH = /(near|close to|next to|walking distance (to|from)|walkable to|not far from)\s+(the\s+|a\s+)?beach|beach\s+(ke|se|k)\s+(paas|pass|nazdeek|najdik|najdeek|kareeb|karib|door nahi|dur nahi)|beach (nearby|close by)|बीच\s+के\s+(पास|नज़दीक|नजदीक|करीब)/i;
+const HEATER = /(?<![\p{L}\p{M}])((?:room|electric|space|oil)\s+)?(heaters?|heating)(?![\p{L}\p{M}])|हीटर/iu;
 const ON_BEACH = /beach\s*-?\s*(front|access|facing|side)|on the beach/i;
 
 /** The customer is letting go of the dates ("forget the dates", "dates are flexible", "some other time"). */

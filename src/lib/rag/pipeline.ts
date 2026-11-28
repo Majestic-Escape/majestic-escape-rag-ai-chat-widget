@@ -306,11 +306,22 @@ export async function handleTurn(input: TurnInput, deps: PipelineDeps, signal: A
       const notes: string[] = [];
       if (judged.doubt) notes.push(`which filter to remove? Use the × on its chip.`);
       let p = proposal;
-      if (problem === "budget_basis") {
-        notes.push("that budget is a total or per person; only a nightly budget can be used.");
-        const { price: _notNightly, ...rest } = p.set; // left out, not removed: the current budget stays as it is
-        p = { ...p, set: rest };
-      } else if (problem && !(problem.startsWith("dates_") && !dated) && problem !== "negation") notes.push(clarifyReply(problem));
+      // The part the checks doubt is left out of the draft (left out, not removed: the current value stays), and the
+      // note says why. Shown as a line, an inverted budget ("4000 se zyada nahi" read as "from ₹4,000") was one tap
+      // from being applied (dev, Haiku, 2026-11-28).
+      // ("numbers" names no field: a count the check could not place, often a stay length while dates are off, so
+      // leaving every number out dropped right budgets — dev d2-008. It stays a note, as before.)
+      const doubted = problem === "budget_basis" || problem === "budget_direction" ? ["price"]
+        : problem === "place" ? ["place"]
+        : problem?.startsWith("dates_") ? ["checkIn", "checkOut"]
+        : [];
+      if (doubted.length) {
+        const set = { ...p.set } as Record<string, unknown>;
+        for (const k of doubted) delete set[k];
+        p = { ...p, set: set as typeof p.set, ...(problem?.startsWith("dates_") ? { nights: undefined } : {}) };
+      }
+      if (problem === "budget_basis") notes.push("that budget is a total or per person; only a nightly budget can be used.");
+      else if (problem && !(problem.startsWith("dates_") && !dated) && problem !== "negation") notes.push(clarifyReply(problem));
       else if (problem === "negation" && !judged.doubt) notes.push(clarifyReply(problem));
       if (!dated && (p.set.checkIn || p.set.checkOut || p.nights)) notes.push("dates are picked on the stay page.");
       for (const u of p.unsupported) notes.push(`listings can't confirm "${u}"; you'll be asked before such stays are shown.`);
