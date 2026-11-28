@@ -96,7 +96,7 @@ export function failureKind(status: number, type?: string | null, code?: string 
 }
 
 /** tokensIn counts every input token; cacheRead / cacheWrite say how many of them came from / went to the prompt cache. */
-type Out = { text: string; tokensIn: number; tokensOut: number; cacheRead?: number; cacheWrite?: number };
+type Out = { text: string; tokensIn: number; tokensOut: number; cacheRead?: number; cacheWrite?: number; refused?: boolean };
 
 async function callGemini(system: string, user: string, p: Provider, f: typeof fetch, signal: AbortSignal): Promise<Out> {
   const res = await f(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(p.model)}:generateContent`, {
@@ -171,12 +171,11 @@ async function callAnthropic(system: string, user: string, p: Provider, f: typeo
       },
       { signal }
     );
-    // A declined request is a failure of this attempt; the next chain entry answers.
-    if (msg.stop_reason === "refusal") throw new ProviderError("anthropic refusal", 422, undefined, "content");
     const text = msg.content.map((b) => (b.type === "text" ? b.text : "")).join("");
     const cacheRead = msg.usage.cache_read_input_tokens ?? 0;
     const cacheWrite = msg.usage.cache_creation_input_tokens ?? 0;
-    return { text, tokensIn: msg.usage.input_tokens + cacheRead + cacheWrite, tokensOut: msg.usage.output_tokens, cacheRead, cacheWrite };
+    // A declined request fails this attempt (proposeJson, after counting its billed tokens).
+    return { text, tokensIn: msg.usage.input_tokens + cacheRead + cacheWrite, tokensOut: msg.usage.output_tokens, cacheRead, cacheWrite, refused: msg.stop_reason === "refusal" };
   } catch (err) {
     if (err instanceof Anthropic.APIError && typeof err.status === "number") {
       const after = Number(err.headers?.get("retry-after"));
@@ -248,9 +247,11 @@ export async function proposeJson(system: string, user: string, cfg: LlmConfig, 
     try {
       const call = p.kind === "gemini" ? callGemini : p.kind === "anthropic" ? callAnthropic : callOpenAiCompatible;
       const out = await call(system, user, p, cfg.fetch, AbortSignal.any([signal, AbortSignal.timeout(ATTEMPT_TIMEOUT_MS[timed]!)]));
+      // counted as soon as the provider answers: a refusal or an unusable answer is billed too
+      cfg.record?.({ provider: id, tokensIn: out.tokensIn, tokensOut: out.tokensOut, cacheRead: out.cacheRead ?? 0, cacheWrite: out.cacheWrite ?? 0 });
+      if (out.refused) throw new ProviderError(`${p.kind} refusal`, 422, undefined, "content"); // the next chain entry answers
       const json = parseJson(out.text); // unusable output counts as a failure of this attempt
       health.failures.delete(id);
-      cfg.record?.({ provider: id, tokensIn: out.tokensIn, tokensOut: out.tokensOut, cacheRead: out.cacheRead ?? 0, cacheWrite: out.cacheWrite ?? 0 });
       return { ok: true, json, provider: id, tokensIn: out.tokensIn, tokensOut: out.tokensOut, attempts, ms: now() - started, ...(out.cacheRead !== undefined ? { cacheRead: out.cacheRead, cacheWrite: out.cacheWrite } : {}) };
     } catch (err) {
       if (signal.aborted) break; // the customer left: not the provider's fault
