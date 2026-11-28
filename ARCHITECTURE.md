@@ -452,8 +452,9 @@ ADMIN_EMAILS=admin@example.com,ops@example.com
 ADMIN_USER_IDS=<24-char-hex-id-of-admin-user>
 
 # Cost guardrails
-DAILY_AI_LIMIT_USER=200                   # AI calls / user / 24h
-DAILY_AI_LIMIT_IP=30                      # AI calls / anonymous IP / 24h
+DAILY_AI_LIMIT_USER=10                    # typed messages that reach a model / signed-in person / 24h
+DAILY_AI_LIMIT_GUEST=10                   # the same, per guest device
+DAILY_AI_LIMIT_IP=30                      # the same, per network address (abuse backstop)
 
 # CORS + linking
 ALLOWED_ORIGINS=https://majesticescape.in,https://admin.majesticescape.in,http://localhost:3000,http://localhost:3001

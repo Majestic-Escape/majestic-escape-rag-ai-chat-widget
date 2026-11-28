@@ -19,6 +19,7 @@ import { inquire } from "../src/lib/rag/inquire";
 import { applyGuards, negatedAmenities, writtenDates } from "../src/lib/rag/guards";
 import { quickRead } from "../src/lib/rag/quick";
 import { canaryPercent, chatIdentity, inCanary, pilotLive, pipelineMode } from "../src/lib/rag/runtime";
+import { checkRateLimit, releaseRateLimit } from "../src/lib/rateLimit";
 
 let failures = 0;
 let passes = 0;
@@ -2255,6 +2256,23 @@ async function main(): Promise<void> {
       const none = draftEditPlan(current, []);
       check("draft edit with every line unticked: the editor opens on the current search", [none.form, none.carry.length], [formOf(current), 0]);
     }
+  });
+
+  await group("daily-allowance", async () => {
+    // Codex review 2026-11-28: typed messages during a billing pause used up the guest's 10 a day, so after a refill the
+    // guest could not draft. The route reserves, then gives back what a turn without a model attempt did not use
+    // (src/app/api/chat/route.ts, POST); the route itself is exercised on staging. Here: the limiter's give-back.
+    const key = `verify:allowance:${Date.now()}`;
+    const day = 24 * 60 * 60 * 1000;
+    const takes = Array.from({ length: 10 }, () => checkRateLimit(key, 10, day).ok);
+    check("ten typed messages fill a guest's day; the eleventh is refused", [takes.every(Boolean), checkRateLimit(key, 10, day).ok], [true, false]);
+    for (let i = 0; i < 10; i++) releaseRateLimit(key); // ten paused turns give theirs back
+    const after = Array.from({ length: 10 }, () => checkRateLimit(key, 10, day).ok);
+    check("after ten give-backs the guest has all ten again, and still no more", [after.every(Boolean), checkRateLimit(key, 10, day).ok], [true, false]);
+    const empty = `verify:allowance:none:${Date.now()}`;
+    releaseRateLimit(empty);
+    releaseRateLimit(empty);
+    check("giving back on a key with nothing counted never creates extra allowance", Array.from({ length: 3 }, () => checkRateLimit(empty, 2, day).ok), [true, true, false]);
   });
 
   console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILED`} — ${passes} checks passed`);

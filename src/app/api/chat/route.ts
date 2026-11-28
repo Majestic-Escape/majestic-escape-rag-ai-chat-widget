@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
 import clientPromise, { appDbName } from "@/lib/mongodb";
 import { validateUserMessage, looksLikeInjection, sanitizeText } from "@/lib/moderation";
-import { checkRateLimit, withKeyLock } from "@/lib/rateLimit";
+import { checkRateLimit, releaseRateLimit, withKeyLock } from "@/lib/rateLimit";
 import { isAiEnabled } from "@/lib/aiToggle";
 import { handleTurn, type TurnResult } from "@/lib/rag/pipeline";
 import { AVAILABLE_NOTE, FIXED, RECHECK_NOTE, headingFor } from "@/lib/rag/reply";
@@ -78,7 +78,25 @@ function sse(text: string, cards: unknown[] = []): Response {
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
 
+/** Today's typed allowance a request reserved. The daily limits protect model spend, so a request that ends without
+ *  a model attempt gives its reservation back: a typed message while the model is paused (out of credit, rate
+ *  limited), with drafting off, one code reads by itself, a safe reply, a refused or invalid request. Reserving
+ *  first keeps a burst from overshooting the limit; the per-minute limits still count every message. */
+type Allowance = { keys: string[]; used: boolean; settledByStream: boolean };
+const giveBack = (a: Allowance) => { for (const k of a.keys.splice(0)) releaseRateLimit(k); };
+/** Only a finished turn proves no model was asked; a turn that did not finish stays counted. */
+const noModelCall = (r: TurnResult | null) => r !== null && r.log.llm.attempts === 0;
+
 export async function POST(req: NextRequest) {
+  const allowance: Allowance = { keys: [], used: false, settledByStream: false };
+  try {
+    return await handle(req, allowance);
+  } finally {
+    if (!allowance.used && !allowance.settledByStream) giveBack(allowance);
+  }
+}
+
+async function handle(req: NextRequest, allowance: Allowance): Promise<Response> {
   try {
     // ── Ops kill-switch — MUST stay the first statement in this handler ──
     // Every path below this line can cost money: rate-limiter bookkeeping, the
@@ -131,12 +149,19 @@ export async function POST(req: NextRequest) {
       return json(429, { error: "Too many requests, please slow down." }, { "Retry-After": Math.ceil(minutely.retryAfterMs / 1000).toString() });
     }
     const guestLimit = Number(process.env.DAILY_AI_LIMIT_GUEST ?? "10");
+    // Counted calls are recorded in `allowance` (given back unless a model attempt uses them, see POST); a guest over
+    // their own limit therefore does not use up the network's allowance either.
+    const reserve = (key: string, limit: number) => {
+      const r = checkRateLimit(key, limit, DAILY_WINDOW_MS);
+      if (r.ok) allowance.keys.push(key);
+      return r;
+    };
     const daily = isButton
       ? { ok: true as const, retryAfterMs: 0 }
       : (() => {
-          const net = checkRateLimit(`chat:d:${identityKey}`, dailyLimit, DAILY_WINDOW_MS);
+          const net = reserve(`chat:d:${identityKey}`, dailyLimit);
           if (!net.ok || userIdRaw || !guestSessionId) return net;
-          return checkRateLimit(`chat:d:g:${guestSessionId}`, guestLimit, DAILY_WINDOW_MS);
+          return reserve(`chat:d:g:${guestSessionId}`, guestLimit);
         })();
     if (!daily.ok) {
       const filtersOn = searchMode() === "filters";
@@ -221,6 +246,7 @@ export async function POST(req: NextRequest) {
     const logTurn = (r: TurnResult) => console.log(JSON.stringify({ t: "rag", mode: pipeline, ...r.log }));
 
     if (!live) {
+      allowance.used = true; // shadow: the silent run may call a model
       void run().then(logTurn, () => {});
       return reply(FIXED.safe);
     }
@@ -234,14 +260,17 @@ export async function POST(req: NextRequest) {
         result = await run();
       } catch (err) {
         // The lock gave up waiting (an earlier turn of this customer is still running).
+        allowance.used = true;
         console.warn("[chat/route] turn did not run:", (err as Error).message);
         return reply(FIXED.retry);
       }
       logTurn(result);
+      allowance.used = !noModelCall(result);
       return reply(result.text, result.cards);
     }
 
     const encoder = new TextEncoder();
+    allowance.settledByStream = true; // the turn below runs after this handler returns
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const send = (line: string) => {
@@ -254,6 +283,7 @@ export async function POST(req: NextRequest) {
         } catch (err) {
           console.warn("[chat/route] turn did not run:", (err as Error).message);
         }
+        if (noModelCall(result)) giveBack(allowance);
         const text = result?.text ?? FIXED.retry;
         const cards = result?.cards ?? [];
         saveReply(text, cards); // the saved text keeps the filters line: restored history has no chips
