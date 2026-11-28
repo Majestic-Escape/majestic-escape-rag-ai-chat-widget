@@ -187,10 +187,25 @@ async function callAnthropic(system: string, user: string, p: Provider, f: typeo
   }
 }
 
-/** Some models wrap JSON in a code fence despite being asked not to. */
-function parseJson(text: string): unknown {
-  const t = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  return JSON.parse(t);
+/** The first complete JSON object in a model's answer. Some models wrap it in a code fence, and with thinking off
+ *  Haiku 5.5 sometimes "corrects" itself in visible text after it (production, 2026-11-28: a right object, then
+ *  "Wait — … Corrected output:" and a worse one). Anything after the first object is ignored; the object still goes
+ *  through validateProposal, the cross-checks and the guest's Apply. No object at all throws (a content failure). */
+export function parseJson(text: string): unknown {
+  const start = text.indexOf("{");
+  if (start < 0) return JSON.parse(text.trim()); // throws the usual SyntaxError
+  let depth = 0, inString = false, escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return JSON.parse(text.slice(start, i + 1));
+  }
+  return JSON.parse(text.slice(start)); // unbalanced: throws
 }
 
 /** How long to stay away from an entry after this failure (0 = keep using it). */
