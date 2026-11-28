@@ -355,15 +355,16 @@ export function searchReply(ctx: SearchContext): Reply {
 const EXAMPLE = `"villa in North Goa for 6, under ₹15,000 a night, with a pool"`;
 
 export const FIXED = {
-  greeting: `Hi! Tell me where you'd like to stay, your dates, how many guests and your budget, and I'll find stays that fit, for example ${EXAMPLE}.`,
+  greeting: `Hi! Tell me where you'd like to stay, how many guests and your budget, and I'll find stays that fit, for example ${EXAMPLE}.`,
   thanks: "You're welcome! Tell me if you'd like to change anything or look somewhere else.",
   reset: "Starting a fresh search. Where would you like to stay?",
   declined: "No problem. Tell me which requirement you'd like to change, or start a new search.",
   kept: "Okay, I've kept your search as it was. Tell me what you'd like to change.",
-  need_details: `Where would you like to stay? You can also give dates, guests and a budget, for example ${EXAMPLE}.`,
-  support: "For help with an existing booking, please switch to the Support tab. Our team can look it up for you.",
-  travel_off: `I can find stays for you. Give me a place, dates, guests and budget. I can't give general travel advice yet.`,
-  other: `I'm not sure I understood. I can search stays by place, dates, guests, budget and amenities, for example ${EXAMPLE}.`,
+  need_details: `Where would you like to stay? You can also give guests and a budget, for example ${EXAMPLE}.`,
+  // New and existing bookings both land here: the chat never books, pays, cancels or confirms anything.
+  support: "I can't book or change bookings here. To book, open the stay's page and pick your dates. For an existing booking, use the Support tab (sign-in needed).",
+  travel_off: `I can find stays for you: give me a place, guests and a budget. I can't give general travel advice yet.`,
+  other: `I'm not sure I understood. I can search stays by place, guests, budget and amenities, for example ${EXAMPLE}.`,
   not_processed: "I couldn't process that just now. Please try again.",
   busy: "I'm getting a lot of questions right now. Please try again in a little while, or browse stays on the site.",
   retry: "I'm still working on your previous message. Please send that again in a moment.",

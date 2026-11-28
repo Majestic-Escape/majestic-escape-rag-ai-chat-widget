@@ -35,7 +35,7 @@ import { DraftCard, FilterEditor } from "./FilterEditor";
 
 const aiQuickPrompts = [
   { icon: <Search className="w-3.5 h-3.5" />, text: "Find a villa in Goa with a pool" },
-  { icon: <MapPin className="w-3.5 h-3.5" />, text: "Suggest a weekend getaway from Mumbai" },
+  { icon: <MapPin className="w-3.5 h-3.5" />, text: "Apartment in Goa for 2 under ₹5,000" },
   { icon: <Calendar className="w-3.5 h-3.5" />, text: "What are your cancellation policies?" },
 ];
 
@@ -476,7 +476,7 @@ const DeliveryStatus: React.FC<{
   return (
     <div className="mt-1 max-w-[80%] flex flex-wrap items-center justify-end gap-x-1 text-[11px] leading-snug">
       <span role="status" className={failed ? "text-red-600" : "text-stone"}>
-        {failed ? `Not sent${message.failureReason ? ` — ${message.failureReason}` : ""}` : "Delivery not confirmed"}
+        {failed ? `Not sent${message.failureReason ? `: ${message.failureReason}` : ""}` : "Delivery not confirmed"}
       </span>
       <span aria-hidden="true" className="text-stone">·</span>
       <button
@@ -702,6 +702,8 @@ const MessageBubble: React.FC<{
 
 type MenuTileAction =
   | { kind: "prompt"; text: string }
+  /** The filter editor when the filter controls are on (a prompt there only gets "use the filters"), else the prompt. */
+  | { kind: "find"; text: string }
   | { kind: "navigate"; href: string }
   | { kind: "support" }
   | { kind: "start-fresh" };
@@ -756,15 +758,9 @@ const MENU_SECTIONS: MenuSection[] = [
         label: "Find a stay",
         description: "Tell me what you're looking for",
         icon: <Search className="w-4 h-4" />,
-        action: { kind: "prompt", text: "Help me find a stay" },
+        action: { kind: "find", text: "Help me find a stay" },
       },
-      {
-        id: "weekend",
-        label: "Plan a weekend",
-        description: "Quick getaway ideas",
-        icon: <Calendar className="w-4 h-4" />,
-        action: { kind: "prompt", text: "Suggest a weekend getaway" },
-      },
+      // No "Plan a weekend" tile: general travel advice is off, so it could only answer "I can't do that yet".
       {
         id: "browse",
         label: "Browse all stays",
@@ -841,6 +837,8 @@ interface MainMenuDrawerProps {
   mode: ChatMode;
   onClose: () => void;
   onPrompt: (text: string) => void;
+  /** Set when the filter controls are on: "Find a stay" opens the filter editor. */
+  onOpenFilters?: () => void;
   onNavigate: (href: string) => void;
   onSwitchToSupport: () => void;
   onStartFresh: () => void;
@@ -857,6 +855,7 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
   mode,
   onClose,
   onPrompt,
+  onOpenFilters,
   onNavigate,
   onSwitchToSupport,
   onStartFresh,
@@ -908,6 +907,11 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
         onPrompt(tile.action.text);
         onClose();
         break;
+      case "find":
+        onClose();
+        if (onOpenFilters) onOpenFilters();
+        else onPrompt(tile.action.text);
+        break;
       case "navigate":
         onNavigate(tile.action.href);
         onClose();
@@ -933,7 +937,7 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
         // assistant disabled those would switch the user to a tab that is no
         // longer rendered and then hit a 403, so drop them rather than leave a
         // dead end in the menu.
-        (t.action.kind !== "prompt" || aiAvailable) &&
+        ((t.action.kind !== "prompt" && t.action.kind !== "find") || aiAvailable) &&
         (t.action.kind !== "support" || supportEnabled) &&
         // Likewise "start fresh" when there is nothing to clear.
         (t.action.kind !== "start-fresh" || canStartFresh)
@@ -1037,7 +1041,7 @@ const MainMenuDrawer: React.FC<MainMenuDrawerProps> = ({
             <p className="text-[12px] text-stone leading-relaxed mb-4">
               {mode === "support"
                 ? "Your support history will still be saved on the server. This only clears the visible thread."
-                : "Your AI history is saved on the server — reload anytime to bring it back."}
+                : "Your AI history is saved on the server, so a reload brings it back."}
             </p>
             {mode === "support" && pendingCount > 0 && (
               <p className="text-[12px] font-medium text-red-600 leading-relaxed -mt-2 mb-4">
@@ -2129,9 +2133,26 @@ export const ChatWidget: React.FC = () => {
             if (mode !== "ai") setMode("ai");
             sendAi(text, "ai");
           }}
+          onOpenFilters={searchControls ? () => openEditor(null) : undefined}
           onNavigate={(href) => {
+            // On phones and tablets the open panel owns a history entry (the Back sentinel). Closing the panel
+            // steps back over it, and that step cancels a navigation already started (the menu's links did
+            // nothing on phones until 2026-11-28), so navigate once the step has landed.
+            const sentinel = (history.state as { __majesticChatOpen?: boolean } | null)?.__majesticChatOpen === true;
             setIsOpen(false);
-            window.location.href = href;
+            if (!sentinel) {
+              window.location.href = href;
+              return;
+            }
+            let gone = false;
+            const go = () => {
+              if (gone) return;
+              gone = true;
+              window.removeEventListener("popstate", go);
+              window.location.href = href;
+            };
+            window.addEventListener("popstate", go);
+            setTimeout(go, 1500); // shortcut: navigate anyway if the step never lands
           }}
           onSwitchToSupport={() => setMode("support")}
           onStartFresh={() => {

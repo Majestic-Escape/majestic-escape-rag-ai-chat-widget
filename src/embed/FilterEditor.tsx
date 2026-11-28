@@ -350,7 +350,6 @@ export const DraftCard: React.FC<{
   const chosen = draft.lines.filter((_, i) => keep[i]);
   return (
     <div className="flex flex-col gap-2 text-[14px]">
-      <p className="text-[12px] text-gray-500">You wrote: <span className="text-graphite">“{draft.said}”</span></p>
       {draft.lines.length > 0 ? (
         <fieldset disabled={!live} className="flex flex-col gap-1">
           <legend className="text-[13px] font-semibold text-graphite mb-1">Changes to apply:</legend>
