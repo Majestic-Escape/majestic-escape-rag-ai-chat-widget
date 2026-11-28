@@ -2185,12 +2185,19 @@ async function main(): Promise<void> {
       const w = world([refusal]);
       for (let i = 0; i < 5; i++) await w.ask();
       check("five refusals in a row never pause drafting for everyone", [w.open() <= 0, w.calls()], [true, 5]);
+      check("a refusal is billed, so each one is counted in the daily usage", w.recorded, Array(5).fill({ provider: "anthropic:claude-haiku-5-5", tokensIn: 10, tokensOut: 0, cacheRead: 0, cacheWrite: 0 }));
     }
     {
       const w = world([ok("this is not json")]);
       for (let i = 0; i < 5; i++) await w.ask();
       const r = await w.ask();
       check("unusable answers never pause drafting either; each is just that message's failure", [w.open() <= 0, w.calls(), !r.ok && r.why], [true, 6, "failed"]);
+      check("an unusable answer is billed, so it is counted in the daily usage (it was missed before 2026-11-28)", [w.recorded.length, w.recorded[0]], [6, { provider: "anthropic:claude-haiku-5-5", tokensIn: 2170, tokensOut: 120, cacheRead: 2034, cacheWrite: 0 }]);
+    }
+    {
+      const w = world([err(500, "api_error")]);
+      await w.ask();
+      check("an HTTP error is not billed: reserved against the cap, not counted as a call", [w.reserved(), w.recorded.length], [1, 0]);
     }
     {
       // Haiku 5.5 with thinking off, production 2026-11-28, run 2 of 3 for "four friends … quiet villa in goa with a pool":
