@@ -12,7 +12,7 @@ import { hasDateCue, hasNegation, hasNonNightlyBudgetCue, headcount, numbersIn, 
 import { applyDelta, crossCheck, fastPath, judgeRemovals, normaliseExact, ownWords, revalidate, saidIn, stripRestated, understandInput, validateProposal, type Proposal } from "../src/lib/rag/understand";
 import { handleTurn, type PipelineDeps, type TurnResult } from "../src/lib/rag/pipeline";
 import { guestIdForUnverifiedToken, memoryStore, stateKey, IDLE_MS, type StateStore } from "../src/lib/rag/state";
-import { failureKind, isHindiOrHinglish, newHealth, parseChain, proposeJson, providerId, routeChain, type LlmConfig, type LlmResult, type Provider } from "../src/lib/rag/llm";
+import { failureKind, isHindiOrHinglish, newHealth, parseChain, parseJson, proposeJson, providerId, routeChain, type LlmConfig, type LlmResult, type Provider } from "../src/lib/rag/llm";
 import { diffOp, draftEditPlan, formOf, mergeOps } from "../src/embed/FilterEditor";
 import { FIXED, draftOf, searchReply, validateReply, type Reply } from "../src/lib/rag/reply";
 import { inquire } from "../src/lib/rag/inquire";
@@ -2191,6 +2191,20 @@ async function main(): Promise<void> {
       for (let i = 0; i < 5; i++) await w.ask();
       const r = await w.ask();
       check("unusable answers never pause drafting either; each is just that message's failure", [w.open() <= 0, w.calls(), !r.ok && r.why], [true, 6, "failed"]);
+    }
+    {
+      // Haiku 5.5 with thinking off, production 2026-11-28, run 2 of 3 for "four friends … quiet villa in goa with a pool":
+      // a right object, then visible self-correction and a worse second object. The first object is the reading.
+      const prod = '{"intent":"search","set":{"place":"goa","guests":{"min":4},"propertyType":"villa","amenitiesAll":["pool"]},"remove":[],"soft":null}\n\nWait — the schema lists "soft" as a field inside remove. Corrected output:\n\n{"intent":"search","set":{"place":"goa"},"remove":[{"field":"soft","value":"quiet"}]}';
+      check("parse: the first object of a self-correcting answer, the rest ignored", parseJson(prod), { intent: "search", set: { place: "goa", guests: { min: 4 }, propertyType: "villa", amenitiesAll: ["pool"] }, remove: [], soft: null });
+      check("parse: a code fence and leading words around the object", parseJson('Here you go:\n```json\n{"intent":"greeting"}\n```'), { intent: "greeting" });
+      check("parse: braces and quotes inside strings do not end the object", parseJson('{"said":"a {quiet} \\"villa\\" }","n":1} trailing'), { said: 'a {quiet} "villa" }', n: 1 });
+      let threw = false;
+      try { parseJson("no json here"); } catch { threw = true; }
+      check("parse: an answer with no object is still a failure", threw, true);
+      const w = world([ok(prod)]);
+      const r = await w.ask();
+      check("a self-correcting Haiku answer becomes a draft instead of 'couldn't read that'", [r.ok, r.ok && (r.json as { set?: { place?: string } }).set?.place], [true, "goa"]);
     }
     {
       const w = world([err(500, "api_error")]);

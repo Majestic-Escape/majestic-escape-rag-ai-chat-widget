@@ -60,7 +60,7 @@ export interface TurnLog {
   fast: string | null;
   ms: number;
   /** cacheRead / cacheWrite: input tokens served from / written to the provider's prompt cache (hit / miss). */
-  llm: { provider: string | null; attempts: number; tokensIn: number; tokensOut: number; cacheRead?: number; cacheWrite?: number };
+  llm: { provider: string | null; attempts: number; tokensIn: number; tokensOut: number; cacheRead?: number; cacheWrite?: number; why?: string; errors?: string[] };
   catalog: { scope: string; pages: number; rows: number; total: number; complete: boolean } | { failed: string } | null;
   counts: { confirmed: number; possible: number; excluded: number } | null;
   cards: number;
@@ -240,6 +240,8 @@ export async function handleTurn(input: TurnInput, deps: PipelineDeps, signal: A
     log.llm = {
       provider: llm.ok && !quick ? llm.provider : null, attempts: llm.attempts, tokensIn: llm.ok ? llm.tokensIn : 0, tokensOut: llm.ok ? llm.tokensOut : 0,
       ...(llm.ok && llm.cacheRead !== undefined ? { cacheRead: llm.cacheRead, cacheWrite: llm.cacheWrite } : {}),
+      // why a model reading failed: provider, status, error code or parse error; never the customer's text
+      ...(!llm.ok ? { why: llm.why, errors: llm.errors } : {}),
     };
     if (!llm.ok) {
       // Out of daily budget, or every provider out of quota: say we are busy. Fast paths,
